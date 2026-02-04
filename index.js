@@ -5,6 +5,9 @@ const cheerio = require('cheerio');
 const fs = require('fs').promises;
 const path = require('path');
 
+// Установка timezone для Германии
+process.env.TZ = 'Europe/Berlin';
+
 // Инициализация бота
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
 
@@ -539,8 +542,21 @@ bot.onText(/\/prices/, async (msg) => {
     const latest = database[station.url]?.[0];
     if (latest) {
       // Формат: Station ID - NAME
+      const timestamp = new Date(latest.timestamp);
+      const dateStr = timestamp.toLocaleDateString('de-DE', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric'
+      });
+      const timeStr = timestamp.toLocaleTimeString('de-DE', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      });
+      
       message += `📍 *Station ${latest.id} - ${station.name}*\n`;
-      message += `   _${new Date(latest.timestamp).toLocaleString('ru-RU')}_\n`;
+      message += `   _${dateStr}, ${timeStr}_\n`;
       
       // Показываем цены если есть
       if (latest.prices.diesel) message += `   💰 Diesel: ${latest.prices.diesel}€\n`;
@@ -584,8 +600,20 @@ bot.onText(/\/cached/, async (msg) => {
       const timestamp = new Date(latest.timestamp);
       const ageMinutes = Math.floor((Date.now() - timestamp.getTime()) / 60000);
       
+      const dateStr = timestamp.toLocaleDateString('de-DE', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric'
+      });
+      const timeStr = timestamp.toLocaleTimeString('de-DE', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      });
+      
       message += `📍 *Station ${latest.id} - ${station.name}*\n`;
-      message += `   _${timestamp.toLocaleString('ru-RU')} (${ageMinutes} мин назад)_\n`;
+      message += `   _${dateStr}, ${timeStr} (${ageMinutes} мин назад)_\n`;
       
       if (latest.prices.diesel) message += `   💰 Diesel: ${latest.prices.diesel}€\n`;
       if (latest.prices.e5) message += `   💰 E5: ${latest.prices.e5}€\n`;
@@ -1277,8 +1305,15 @@ app.get('/api/stations', async (req, res) => {
 const recentLogs = [];
 const originalConsoleLog = console.log;
 console.log = function(...args) {
+  const now = new Date();
+  const timeStr = now.toLocaleTimeString('de-DE', { 
+    hour: '2-digit', 
+    minute: '2-digit', 
+    second: '2-digit',
+    hour12: false 
+  });
   const message = args.join(' ');
-  recentLogs.push('[' + new Date().toLocaleTimeString('ru-RU') + '] ' + message);
+  recentLogs.push(`[${timeStr}] ${message}`);
   if (recentLogs.length > 50) recentLogs.shift();
   originalConsoleLog.apply(console, args);
 };
