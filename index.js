@@ -1306,4 +1306,4 @@ app.listen(PORT, () => {
 });
 
 // Автоматическая проверка каждые 30 минут (на всякий случай)
-setInterval(checkAllPrices, 30 * 60 * 1000);
+setInterval(checkAllPrices, 10 * 60 * 1000);
