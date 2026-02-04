@@ -1,0 +1,41 @@
+{
+  "https://www.clever-tanken.de/tankstelle_details/186650": [
+    {
+      "id": "186650",
+      "name": "CLASSIC",
+      "prices": {
+        "diesel": 1.759,
+        "e5": 1.849,
+        "e10": 1.829
+      },
+      "timestamp": "2026-02-01T16:40:43.000Z",
+      "url": "https://www.clever-tanken.de/tankstelle_details/186650"
+    }
+  ],
+  "https://www.clever-tanken.de/tankstelle_details/11438": [
+    {
+      "id": "11438",
+      "name": "HEM",
+      "prices": {
+        "diesel": 1.769,
+        "e5": 1.859,
+        "e10": 1.839
+      },
+      "timestamp": "2026-02-01T16:40:43.000Z",
+      "url": "https://www.clever-tanken.de/tankstelle_details/11438"
+    }
+  ],
+  "https://www.clever-tanken.de/tankstelle_details/27581": [
+    {
+      "id": "27581",
+      "name": "BFT",
+      "prices": {
+        "diesel": 1.749,
+        "e5": 1.839,
+        "e10": 1.819
+      },
+      "timestamp": "2026-02-01T16:40:43.000Z",
+      "url": "https://www.clever-tanken.de/tankstelle_details/27581"
+    }
+  ]
+}

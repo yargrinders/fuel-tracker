@@ -1,0 +1,12 @@
+{
+  "910176803": {
+    "notifications": true,
+    "notifyChanges": false,
+    "targets": {
+      "diesel": null,
+      "e5": 1.739,
+      "e10": null
+    },
+    "fuelType": "e5"
+  }
+}
