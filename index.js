@@ -1088,7 +1088,7 @@ app.get('/', (req, res) => {
         <button class="btn" onclick="getLogs()">📋 Показать логи</button>
         <a href="/api/stations" class="btn">📍 Список станций</a>
         <a href="/api/health" class="btn">💚 Health Check</a>
-        <a href="https://t.me/YOUR_BOT_USERNAME" class="btn" target="_blank">💬 Открыть бота</a>
+        <a href="https://t.me/e5_price_bot" class="btn" target="_blank">💬 Открыть бота</a>
       </div>
     </div>
     
