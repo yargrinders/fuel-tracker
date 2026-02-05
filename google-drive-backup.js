@@ -18,6 +18,7 @@ class GoogleDriveBackup {
       // Получение credentials из переменной окружения
       let credentials;
       
+      // Проверяем все возможные варианты имён переменных
       if (process.env.GOOGLE_CREDENTIALS) {
         // Способ 1: Прямой JSON
         credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
@@ -25,13 +26,35 @@ class GoogleDriveBackup {
         // Способ 2: Base64
         const decoded = Buffer.from(process.env.GOOGLE_CREDENTIALS_BASE64, 'base64').toString('utf-8');
         credentials = JSON.parse(decoded);
+      } else if (process.env.GDRIVE_KEYFILE) {
+        // Способ 3: GDRIVE_KEYFILE (твой вариант из Render)
+        try {
+          // Пытаемся прочитать как путь к файлу
+          const keyfilePath = process.env.GDRIVE_KEYFILE;
+          if (keyfilePath.startsWith('/etc/secrets/')) {
+            const fs = require('fs');
+            const fileContent = fs.readFileSync(keyfilePath, 'utf-8');
+            credentials = JSON.parse(fileContent);
+          } else {
+            // Или как прямой JSON
+            credentials = JSON.parse(process.env.GDRIVE_KEYFILE);
+          }
+        } catch (error) {
+          console.error('❌ Ошибка чтения GDRIVE_KEYFILE:', error.message);
+          return false;
+        }
       } else {
         console.error('❌ Google Drive credentials не найдены в environment variables');
+        console.error('   Ожидается: GOOGLE_CREDENTIALS, GOOGLE_CREDENTIALS_BASE64 или GDRIVE_KEYFILE');
         return false;
       }
 
+      // Получение folder ID (проверяем оба варианта)
+      this.folderId = process.env.GOOGLE_DRIVE_FOLDER_ID || process.env.GDRIVE_FOLDER_ID;
+      
       if (!this.folderId) {
-        console.error('❌ GOOGLE_DRIVE_FOLDER_ID не установлен');
+        console.error('❌ Folder ID не установлен');
+        console.error('   Ожидается: GOOGLE_DRIVE_FOLDER_ID или GDRIVE_FOLDER_ID');
         return false;
       }
 
@@ -51,6 +74,7 @@ class GoogleDriveBackup {
       return true;
     } catch (error) {
       console.error('❌ Ошибка инициализации Google Drive:', error.message);
+      console.error('   Stack:', error.stack);
       return false;
     }
   }
