@@ -131,6 +131,134 @@ function registerBackupCommands(bot) {
       bot.sendMessage(chatId, '❌ Ошибка: ' + error.message);
     }
   });
+  
+  // Команда /diagnose - Диагностика Google Drive подключения
+  bot.onText(/\/diagnose/, async (msg) => {
+    const chatId = msg.chat.id;
+    
+    // Проверка прав
+    const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
+    if (ADMIN_CHAT_ID && chatId.toString() !== ADMIN_CHAT_ID) {
+      bot.sendMessage(chatId, '❌ У вас нет прав для выполнения этой команды');
+      return;
+    }
+    
+    bot.sendMessage(chatId, '🔍 *Запускаю диагностику Google Drive...*', { parse_mode: 'Markdown' });
+    
+    let diagnostics = '📋 *ДИАГНОСТИКА GOOGLE DRIVE*\n\n';
+    
+    // Проверка 1: Environment Variables
+    diagnostics += '*1️⃣ Переменные окружения:*\n';
+    
+    const vars = {
+      'GOOGLE_CREDENTIALS': !!process.env.GOOGLE_CREDENTIALS,
+      'GOOGLE_CREDENTIALS_BASE64': !!process.env.GOOGLE_CREDENTIALS_BASE64,
+      'GDRIVE_KEYFILE': !!process.env.GDRIVE_KEYFILE,
+      'GOOGLE_DRIVE_FOLDER_ID': !!process.env.GOOGLE_DRIVE_FOLDER_ID,
+      'GDRIVE_FOLDER_ID': !!process.env.GDRIVE_FOLDER_ID
+    };
+    
+    for (const [key, value] of Object.entries(vars)) {
+      diagnostics += `  ${value ? '✅' : '❌'} ${key}\n`;
+    }
+    
+    if (process.env.GDRIVE_KEYFILE) {
+      diagnostics += `\n  Путь: \`${process.env.GDRIVE_KEYFILE}\`\n`;
+    }
+    
+    const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID || process.env.GDRIVE_FOLDER_ID;
+    if (folderId) {
+      diagnostics += `  Folder ID: \`${folderId}\`\n`;
+    }
+    
+    bot.sendMessage(chatId, diagnostics, { parse_mode: 'Markdown' });
+    
+    // Проверка 2: Keyfile
+    if (process.env.GDRIVE_KEYFILE) {
+      const fs = require('fs');
+      let keyfileCheck = '\n*2️⃣ Проверка keyfile:*\n';
+      
+      try {
+        const keyfilePath = process.env.GDRIVE_KEYFILE;
+        const exists = fs.existsSync(keyfilePath);
+        keyfileCheck += `  ${exists ? '✅' : '❌'} Файл существует\n`;
+        
+        if (exists) {
+          const content = fs.readFileSync(keyfilePath, 'utf-8');
+          keyfileCheck += `  📏 Размер: ${content.length} байт\n`;
+          
+          try {
+            const json = JSON.parse(content);
+            keyfileCheck += '  ✅ JSON валидный\n';
+            keyfileCheck += `  📧 Email: \`${json.client_email || 'N/A'}\`\n`;
+          } catch {
+            keyfileCheck += '  ❌ JSON невалидный\n';
+          }
+        }
+      } catch (error) {
+        keyfileCheck += `  ❌ Ошибка: ${error.message}\n`;
+      }
+      
+      bot.sendMessage(chatId, keyfileCheck, { parse_mode: 'Markdown' });
+    }
+    
+    // Проверка 3: Подключение к API
+    bot.sendMessage(chatId, '\n*3️⃣ Подключение к Google Drive API:*\n_Тестирую..._', { parse_mode: 'Markdown' });
+    
+    try {
+      const success = await googleDriveBackup.initialize();
+      
+      if (success) {
+        bot.sendMessage(chatId, '✅ *Подключение успешно!*', { parse_mode: 'Markdown' });
+        
+        // Проверка 4: Доступ к папке
+        bot.sendMessage(chatId, '\n*4️⃣ Доступ к папке:*\n_Проверяю..._', { parse_mode: 'Markdown' });
+        
+        try {
+          const files = await googleDriveBackup.getBackupInfo();
+          
+          if (files !== null) {
+            let folderInfo = '✅ *Доступ к папке получен!*\n\n';
+            folderInfo += `Файлов в папке: ${files.length}\n\n`;
+            
+            if (files.length > 0) {
+              folderInfo += '*Список файлов:*\n';
+              files.forEach((file, i) => {
+                folderInfo += `${i + 1}. ${file.name} (${file.size})\n`;
+              });
+            } else {
+              folderInfo += '_Папка пуста_\n';
+            }
+            
+            bot.sendMessage(chatId, folderInfo, { parse_mode: 'Markdown' });
+            
+            // Проверка 5: Тест записи
+            bot.sendMessage(chatId, '\n*5️⃣ Тест записи:*\n_Пытаюсь создать тестовый файл..._', { parse_mode: 'Markdown' });
+            
+            const fs = require('fs').promises;
+            const testFile = '/tmp/test-backup.json';
+            await fs.writeFile(testFile, JSON.stringify({ test: true, timestamp: new Date() }));
+            
+            const uploadResult = await googleDriveBackup.uploadFile(testFile, 'test-backup.json');
+            
+            if (uploadResult) {
+              bot.sendMessage(chatId, '✅ *Тест записи успешен!*\n\n_Google Drive полностью работает!_', { parse_mode: 'Markdown' });
+            } else {
+              bot.sendMessage(chatId, '❌ *Тест записи не удался*\n\n_Проверьте права Service Account на папку_', { parse_mode: 'Markdown' });
+            }
+          } else {
+            bot.sendMessage(chatId, '❌ *Не удалось получить доступ к папке*\n\n_Возможно Service Account не имеет прав_', { parse_mode: 'Markdown' });
+          }
+        } catch (error) {
+          bot.sendMessage(chatId, `❌ *Ошибка доступа к папке:*\n\`${error.message}\``, { parse_mode: 'Markdown' });
+        }
+      } else {
+        bot.sendMessage(chatId, '❌ *Подключение не удалось*\n\n_Проверьте credentials и переменные окружения_', { parse_mode: 'Markdown' });
+      }
+    } catch (error) {
+      bot.sendMessage(chatId, `❌ *Критическая ошибка:*\n\`${error.message}\``, { parse_mode: 'Markdown' });
+    }
+  });
 }
 
 // Автоматический бэкап (каждые 24 часа)
@@ -164,6 +292,119 @@ async function startAutoBackup() {
 async function autoRestoreOnStart() {
   const fs = require('fs').promises;
   
+  console.log('\n' + '='.repeat(60));
+  console.log('🔍 ДИАГНОСТИКА GOOGLE DRIVE - ЗАПУСК');
+  console.log('='.repeat(60));
+  
+  // Шаг 1: Проверка переменных окружения
+  console.log('\n📋 Шаг 1: Проверка переменных окружения');
+  console.log('-'.repeat(60));
+  
+  const hasGoogleCreds = !!process.env.GOOGLE_CREDENTIALS;
+  const hasGoogleCredsB64 = !!process.env.GOOGLE_CREDENTIALS_BASE64;
+  const hasGdriveKeyfile = !!process.env.GDRIVE_KEYFILE;
+  const hasGoogleFolderId = !!process.env.GOOGLE_DRIVE_FOLDER_ID;
+  const hasGdriveFolderId = !!process.env.GDRIVE_FOLDER_ID;
+  
+  console.log(`GOOGLE_CREDENTIALS: ${hasGoogleCreds ? '✅ Найдена' : '❌ Не найдена'}`);
+  console.log(`GOOGLE_CREDENTIALS_BASE64: ${hasGoogleCredsB64 ? '✅ Найдена' : '❌ Не найдена'}`);
+  console.log(`GDRIVE_KEYFILE: ${hasGdriveKeyfile ? '✅ Найдена' : '❌ Не найдена'}`);
+  
+  if (hasGdriveKeyfile) {
+    console.log(`  └─ Путь: ${process.env.GDRIVE_KEYFILE}`);
+  }
+  
+  console.log(`GOOGLE_DRIVE_FOLDER_ID: ${hasGoogleFolderId ? '✅ Найдена' : '❌ Не найдена'}`);
+  console.log(`GDRIVE_FOLDER_ID: ${hasGdriveFolderId ? '✅ Найдена' : '❌ Не найдена'}`);
+  
+  if (hasGoogleFolderId) {
+    console.log(`  └─ ID: ${process.env.GOOGLE_DRIVE_FOLDER_ID}`);
+  } else if (hasGdriveFolderId) {
+    console.log(`  └─ ID: ${process.env.GDRIVE_FOLDER_ID}`);
+  }
+  
+  // Шаг 2: Проверка доступа к keyfile (если используется)
+  if (hasGdriveKeyfile) {
+    console.log('\n📄 Шаг 2: Проверка доступа к keyfile');
+    console.log('-'.repeat(60));
+    
+    const keyfilePath = process.env.GDRIVE_KEYFILE;
+    const fs = require('fs');
+    
+    try {
+      const fileExists = fs.existsSync(keyfilePath);
+      console.log(`Файл существует: ${fileExists ? '✅ Да' : '❌ Нет'}`);
+      
+      if (fileExists) {
+        const fileContent = fs.readFileSync(keyfilePath, 'utf-8');
+        console.log(`Размер файла: ${fileContent.length} байт`);
+        
+        try {
+          const json = JSON.parse(fileContent);
+          console.log('JSON валидный: ✅ Да');
+          console.log(`  ├─ type: ${json.type || '❌ отсутствует'}`);
+          console.log(`  ├─ project_id: ${json.project_id || '❌ отсутствует'}`);
+          console.log(`  ├─ client_email: ${json.client_email || '❌ отсутствует'}`);
+          console.log(`  └─ private_key: ${json.private_key ? '✅ присутствует' : '❌ отсутствует'}`);
+        } catch (parseError) {
+          console.log('JSON валидный: ❌ Нет');
+          console.log(`  └─ Ошибка: ${parseError.message}`);
+        }
+      }
+    } catch (error) {
+      console.log(`❌ Ошибка чтения файла: ${error.message}`);
+    }
+  }
+  
+  // Шаг 3: Попытка инициализации Google Drive
+  console.log('\n🔌 Шаг 3: Подключение к Google Drive API');
+  console.log('-'.repeat(60));
+  
+  try {
+    const initResult = await googleDriveBackup.initialize();
+    
+    if (initResult) {
+      console.log('✅ Подключение успешно!');
+      
+      // Шаг 4: Тест доступа к папке
+      console.log('\n📁 Шаг 4: Проверка доступа к папке');
+      console.log('-'.repeat(60));
+      
+      try {
+        const files = await googleDriveBackup.getBackupInfo();
+        
+        if (files !== null) {
+          console.log(`✅ Доступ к папке получен!`);
+          console.log(`Найдено файлов в папке: ${files.length}`);
+          
+          if (files.length > 0) {
+            console.log('\nСписок файлов:');
+            files.forEach((file, i) => {
+              console.log(`  ${i + 1}. ${file.name} (${file.size})`);
+            });
+          } else {
+            console.log('📝 Папка пуста (это нормально для первого запуска)');
+          }
+        } else {
+          console.log('❌ Не удалось получить список файлов');
+        }
+      } catch (error) {
+        console.log(`❌ Ошибка доступа к папке: ${error.message}`);
+      }
+    } else {
+      console.log('❌ Подключение не удалось');
+      console.log('   Смотри ошибки выше для диагностики');
+    }
+  } catch (error) {
+    console.log(`❌ Критическая ошибка: ${error.message}`);
+    console.error('Stack trace:', error.stack);
+  }
+  
+  console.log('\n' + '='.repeat(60));
+  console.log('🏁 ДИАГНОСТИКА ЗАВЕРШЕНА');
+  console.log('='.repeat(60) + '\n');
+  
+  // Теперь пытаемся восстановить данные
   try {
     // Проверяем существует ли database.json
     try {
