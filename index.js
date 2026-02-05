@@ -929,7 +929,7 @@ bot.on('callback_query', async (query) => {
 });
 
 // HTTP endpoint для UptimeRobot и веб-интерфейс
-const express = require('express');
+// const express = require('express');
 const app = express();
 
 // Middleware
