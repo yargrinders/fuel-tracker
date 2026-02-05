@@ -7,13 +7,8 @@ const fsNative = require('fs');
 const fs = require('fs').promises;
 const path = require('path');
 
-// Инициализация бота
-const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
-
-// Пути к файлам
-const STATIONS_FILE = path.join(__dirname, 'stations.json');
-const DATABASE_FILE = path.join(__dirname, 'database.json');
-const USERS_FILE = path.join(__dirname, 'users.json');
+// Установка timezone для Германии
+process.env.TZ = 'Europe/Berlin';
 
 // ===== Google Drive backup/restore (Render Free friendly) =====
 function isAdmin(chatId) {
@@ -24,7 +19,7 @@ function isAdmin(chatId) {
 }
 
 async function createDriveClient() {
-  const keyFile = process.env.GDRIVE_KEYFILE; // путь к Secret File в Render (/etc/secrets/xxx.json)
+  const keyFile = process.env.GDRIVE_KEYFILE; // /etc/secrets/xxx.json
   if (!keyFile) throw new Error('GDRIVE_KEYFILE не задан');
 
   const auth = new google.auth.GoogleAuth({
@@ -90,6 +85,13 @@ async function restoreFromDrive() {
 }
 // ===== /Google Drive =====
 
+// Инициализация бота
+const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
+
+// Пути к файлам
+const STATIONS_FILE = path.join(__dirname, 'stations.json');
+const DATABASE_FILE = path.join(__dirname, 'database.json');
+const USERS_FILE = path.join(__dirname, 'users.json');
 
 // Загрузка данных
 async function loadJSON(filepath, defaultValue = []) {
@@ -118,7 +120,20 @@ async function fetchStationPrices(url) {
       timeout: 15000
     });
 
-    const $ = cheerio.load(response.data);
+    
+const $ = cheerio.load(response.data);
+
+    // clever-tanken: последняя цифра цены часто в <sup id="suffix-price-N">9</sup>
+    // Сохраняем суффиксы в мапу по N, т.к. <sup> может быть НЕ внутри .price-field
+    const suffixMap = {};
+    $('sup[id^="suffix-price-"]').each((i, el) => {
+      const id = $(el).attr('id') || '';
+      const mm = id.match(/suffix-price-(\d+)/);
+      if (!mm) return;
+      const key = mm[1];
+      const val = (($(el).text() || '').trim()).replace(/[^\d]/g, '');
+      if (val) suffixMap[key] = val;
+    });
     
     // Извлекаем ID станции из URL
     const stationId = url.match(/\/(\d+)$/)?.[1];
@@ -136,6 +151,29 @@ async function fetchStationPrices(url) {
       diesel: null
     };
 
+    // Склеиваем current-price + suffix-price (пример: 1.77 + 9 => 1.779)
+    function fullPrice(baseRaw, suffixRaw) {
+      const base = String(baseRaw || '').replace(',', '.').replace(/[^\d.]/g, '').trim();
+      if (!base) return null;
+
+      const m = base.match(/^(\d{1,2})\.(\d{2,3})$/);
+      if (!m) {
+        const n = Number(base);
+        return Number.isFinite(n) ? n : null;
+      }
+
+      // если уже 3 знака после точки — суффикс не нужен
+      if (m[2].length === 3) {
+        const n = Number(base);
+        return Number.isFinite(n) ? n : null;
+      }
+
+      const suf = String(suffixRaw || '').replace(/[^\d]/g, '').trim();
+      const text = suf ? `${m[1]}.${m[2]}${suf}` : base;
+      const n = Number(text);
+      return Number.isFinite(n) ? n : null;
+    }
+
     console.log(`\n🔍 Парсинг станции ${stationId} - ${stationName}`);
 
     // ОСНОВНОЙ МЕТОД: Ищем div.price-field с вложенными span#current-price-X
@@ -143,9 +181,17 @@ async function fetchStationPrices(url) {
       const fieldHtml = $(priceField).html();
       const fieldText = $(priceField).text().toLowerCase();
       
-      // Извлекаем цену из span с id="current-price-X"
-      const priceSpan = $(priceField).find('span[id^="current-price"]').first();
+      // Извлекаем цену из span#current-price-N и suffix из sup#suffix-price-N
+      const priceSpan = $(priceField).find('span[id^="current-price-"]').first();
+      const priceId = priceSpan.attr('id') || '';
+      const idMatch = priceId.match(/current-price-(\d+)/);
+      const num = idMatch ? idMatch[1] : null;
+
       let priceText = priceSpan.text().trim();
+      let suffixText = '';
+      if (num) {
+        suffixText = $(`#suffix-price-${num}`).first().text().trim();
+      }
       
       // Если цена не в span, ищем прямо в тексте
       if (!priceText) {
@@ -154,8 +200,7 @@ async function fetchStationPrices(url) {
       }
       
       if (priceText) {
-        // Парсим цену (формат: 1.71 или 1,71)
-        const price = parseFloat(priceText.replace(',', '.').replace(/[^\d.]/g, ''));
+        const price = fullPrice(priceText, suffixText);
         
         if (!isNaN(price) && price > 0 && price < 3) {
           // Определяем тип топлива по тексту в родительских элементах
@@ -180,10 +225,14 @@ async function fetchStationPrices(url) {
     if (!prices.diesel || !prices.e5 || !prices.e10) {
       console.log('  → Пробую дополнительный поиск...');
       
-      // Ищем все span с id="current-price-*" или "suffix-price-*"
-      $('span[id^="current-price"], span[id^="suffix-price"]').each((i, span) => {
-        const priceText = $(span).text().trim();
-        const price = parseFloat(priceText.replace(',', '.').replace(/[^\d.]/g, ''));
+      // Ищем только current-price-* и доклеиваем suffix-price-* (суффикс по одиночке НЕ парсим)
+      $('span[id^="current-price-"]').each((i, span) => {
+        const baseText = $(span).text().trim();
+        const id = $(span).attr('id') || '';
+        const m = id.match(/current-price-(\d+)/);
+        const num = m ? m[1] : null;
+        const suffixText = num ? $(`#suffix-price-${num}`).first().text().trim() : '';
+        const price = fullPrice(baseText, suffixText);
         
         if (!isNaN(price) && price > 0 && price < 3) {
           // Ищем label/текст рядом со span
@@ -488,34 +537,44 @@ bot.onText(/\/start/, async (msg) => {
   );
 });
 
+
 bot.onText(/\/prices/, async (msg) => {
+  const chatId = msg.chat.id;
+
+  // Сообщаем что идёт live-обновление
+  const waitMsg = await bot.sendMessage(chatId, '🔄 Проверяю актуальные цены (live)...');
+
+  // Принудительно обновляем цены (это же пишет логи парсинга)
+  await checkAllPrices();
+
   const stations = await loadJSON(STATIONS_FILE);
   const database = await loadJSON(DATABASE_FILE, {});
-  
-  let message = '⛽ *Текущие цены:*\n\n';
-  
+
+  let message = '⛽ *Актуальные цены:*\n\n';
+
   for (const station of stations) {
     const latest = database[station.url]?.[0];
     if (latest) {
-      // Формат: Station ID - NAME
+      const timestamp = new Date(latest.timestamp);
+      const dateStr = timestamp.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+      const timeStr = timestamp.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+
       message += `📍 *Station ${latest.id} - ${station.name}*\n`;
-      message += `   _${new Date(latest.timestamp).toLocaleString('ru-RU')}_\n`;
-      
-      // Показываем цены если есть
-      // if (latest.prices.diesel) message += `   💰 Diesel: ${latest.prices.diesel}€\n`;
+      message += `   _${dateStr}, ${timeStr}_\n`;
+      if (latest.prices.diesel) message += `   💰 Diesel: ${latest.prices.diesel}€\n`;
+      if (latest.prices.e10) message += `   💰 E10: ${latest.prices.e10}€\n`;
       if (latest.prices.e5) message += `   💰 E5: ${latest.prices.e5}€\n`;
-      // if (latest.prices.e10) message += `   💰 E10: ${latest.prices.e10}€\n`;
-      
       message += '\n';
     } else {
-      // Если нет данных
       const stationId = station.url.match(/\/(\d+)$/)?.[1];
       message += `📍 *Station ${stationId} - ${station.name}*\n`;
       message += `   _Нет данных_\n\n`;
     }
   }
-  
-  bot.sendMessage(msg.chat.id, message, { parse_mode: 'Markdown' });
+
+  // Убираем "подождите" и отправляем итог
+  try { await bot.deleteMessage(chatId, waitMsg.message_id); } catch {}
+  await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
 });
 
 bot.onText(/\/check/, async (msg) => {
@@ -527,6 +586,35 @@ bot.onText(/\/check/, async (msg) => {
   } else {
     bot.sendMessage(msg.chat.id, `✅ Обновлено: ${updates.length} станций`);
   }
+});
+
+bot.onText(/\/cached/, async (msg) => {
+  const stations = await loadJSON(STATIONS_FILE);
+  const database = await loadJSON(DATABASE_FILE, {});
+
+  let message = '💾 *Последние известные цены:*\n_Без обновления с сайта_\n\n';
+
+  for (const station of stations) {
+    const latest = database[station.url]?.[0];
+    if (latest) {
+      const timestamp = new Date(latest.timestamp);
+      const ageMinutes = Math.floor((Date.now() - timestamp.getTime()) / 60000);
+
+      const dateStr = timestamp.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+      const timeStr = timestamp.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+
+      message += `📍 *Station ${latest.id} - ${station.name}*\n`;
+      message += `   _${dateStr}, ${timeStr} (${ageMinutes} мин назад)_\n`;
+
+      if (latest.prices.diesel) message += `   💰 Diesel: ${latest.prices.diesel}€\n`;
+      if (latest.prices.e10) message += `   💰 E10: ${latest.prices.e10}€\n`;
+      if (latest.prices.e5) message += `   💰 E5: ${latest.prices.e5}€\n`;
+      message += '\n';
+    }
+  }
+
+  message += '💡 Для актуальных цен используй `/prices`';
+  await bot.sendMessage(msg.chat.id, message, { parse_mode: 'Markdown' });
 });
 
 bot.onText(/\/stations/, async (msg) => {
@@ -661,8 +749,30 @@ bot.onText(/\/settings/, async (msg) => {
   });
 });
 
+bot.onText(/\/help/, (msg) => {
+  bot.sendMessage(msg.chat.id,
+    '📖 *Подробная помощь*\n\n' +
+    '*Основные команды:*\n' +
+    '`/prices` - Показать текущие цены на всех заправках\n' +
+    '`/check` - Синхронизировать цены\n' +
+    '`/analytics` - Анализ лучшего времени за неделю\n' +
+    '`/settings` - Настройки\n\n' +
+    '*Настройка алертов:*\n' +
+    '`/settarget diesel 1.76` - Уведомить при цене ≤ 1.76€\n' +
+    '`/settarget e5 1.80` - Уведомить при цене ≤ 1.80€\n\n' +
+    '*Как это работает:*\n' +
+    '1️⃣ Бот проверяет цены каждые 5 минут\n' +
+    '2️⃣ Если цена достигла целевой - получишь уведомление\n' +
+    '3️⃣ Раз в неделю смотри `/analytics` для оптимального времени\n\n' +
+    '*Пример использования:*\n' +
+    '• Установи целевую цену: `/settarget diesel 1.74`\n' +
+    '• Жди уведомления 🔔\n' +
+    '• Заправляйся по лучшей цене!\n\n' +
+    '💡 Совет: используй `/analytics` чтобы узнать, в какой день и час обычно самые низкие цены',
+    { parse_mode: 'Markdown' }
+  );
+});
 
-// Админ-команды для бэкапа (Google Drive)
 bot.onText(/\/backup/, async (msg) => {
   const chatId = msg.chat.id;
   if (!isAdmin(chatId)) return bot.sendMessage(chatId, '⛔ Нет доступа.');
@@ -683,39 +793,50 @@ bot.onText(/\/restore/, async (msg) => {
   try {
     await bot.sendMessage(chatId, '☁️ Восстанавливаю файлы с Google Drive...');
     await restoreFromDrive();
-    await bot.sendMessage(chatId, '✅ Restore готов: файлы восстановлены с Google Drive');
+    await bot.sendMessage(chatId, '✅ Restore готов: database/users/stations восстановлены');
   } catch (e) {
     await bot.sendMessage(chatId, `❌ Restore ошибка: ${e.message}`);
   }
 });
 
-bot.onText(/\/help/, (msg) => {
-  bot.sendMessage(msg.chat.id,
-    '📖 *Подробная помощь*\n\n' +
-    '*Основные команды:*\n' +
-    '`/prices` - Показать текущие цены на всех заправках\n' +
-    '`/check` - Синхронизировать цены\n' +
-    '`/analytics` - Анализ лучшего времени за неделю\n' +
-    '`/settings` - Настройки\n\n' +
-    '*Настройка алертов:*\n' +
-    '`/settarget diesel 1.76` - Уведомить при цене ≤ 1.76€\n' +
-    '`/settarget e5 1.80` - Уведомить при цене ≤ 1.80€\n\n' +
-    '*Как это работает:*\n' +
-    '1️⃣ Бот проверяет цены каждые 10 минут\n' +
-    '2️⃣ Если цена достигла целевой - получишь уведомление\n' +
-    '3️⃣ Раз в неделю смотри `/analytics` для оптимального времени\n\n' +
-    '*Пример использования:*\n' +
-    '• Установи целевую цену: `/settarget diesel 1.74`\n' +
-    '• Жди уведомления 🔔\n' +
-    '• Заправляйся по лучшей цене!\n\n' +
-    '💡 Совет: используй `/analytics` чтобы узнать, в какой день и час обычно самые низкие цены',
-    { parse_mode: 'Markdown' }
-  );
-});
+bot.onText(/\/stats/, async (msg) => {
+  const database = await loadJSON(DATABASE_FILE, {});
+  const stations = await loadJSON(STATIONS_FILE);
 
-// HTTP endpoint для UptimeRobot
-const express = require('express');
-// const app = express();
+  let totalEntries = 0;
+  let oldestDate = new Date();
+  let newestDate = new Date(0);
+
+  let message = '📊 *Статистика базы данных*\n\n';
+
+  for (const station of stations) {
+    const entries = database[station.url] || [];
+    totalEntries += entries.length;
+
+    if (entries.length > 0) {
+      const stationOldest = new Date(entries[entries.length - 1].timestamp);
+      const stationNewest = new Date(entries[0].timestamp);
+
+      if (stationOldest < oldestDate) oldestDate = stationOldest;
+      if (stationNewest > newestDate) newestDate = stationNewest;
+
+      message += `📍 *${station.name}*\n`;
+      message += `   Записей: ${entries.length}\n`;
+      message += `   Последняя: ${stationNewest.toLocaleString('ru-RU')}\n\n`;
+    }
+  }
+
+  const ageInDays = (newestDate > oldestDate) ? Math.floor((newestDate - oldestDate) / (1000 * 60 * 60 * 24)) : 0;
+  const dbSize = JSON.stringify(database).length / 1024;
+
+  message += `\n📈 *Общая статистика:*\n`;
+  message += `Всего записей: ${totalEntries}\n`;
+  message += `Период данных: ${ageInDays} дней\n`;
+  message += `Размер БД: ${dbSize.toFixed(2)} KB\n\n`;
+  message += `🧹 *Автоочистка:* последние 14 дней`;
+
+  await bot.sendMessage(msg.chat.id, message, { parse_mode: 'Markdown' });
+});
 
 // Обработчик inline кнопок
 bot.on('callback_query', async (query) => {
@@ -789,11 +910,41 @@ bot.on('callback_query', async (query) => {
 });
 
 // HTTP endpoint для UptimeRobot
-// const express = require('express');
+const express = require('express');
 const app = express();
 
 app.get('/health', (req, res) => {
   res.send('OK');
+});
+
+app.get('/', async (req, res) => {
+  try {
+    const stations = await loadJSON(STATIONS_FILE, []);
+    const database = await loadJSON(DATABASE_FILE, {});
+
+    const rows = stations.map(s => {
+      const latest = database[s.url]?.[0];
+      if (!latest) return `<tr><td>${s.name}</td><td colspan="3">нет данных</td></tr>`;
+      const t = new Date(latest.timestamp);
+      const ts = t.toLocaleString('de-DE', { hour12: false });
+      const p = latest.prices || {};
+      const fmt = (x) => (x === null || x === undefined) ? '—' : Number(x).toFixed(3);
+      return `<tr><td>${s.name}</td><td>${fmt(p.diesel)}</td><td>${fmt(p.e10)}</td><td>${fmt(p.e5)}</td><td>${ts}</td></tr>`;
+    }).join('');
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.end(`<!doctype html><html><head><meta charset="utf-8"/>
+<title>Fuel Tracker</title>
+<style>body{font-family:system-ui,Arial,sans-serif;margin:24px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #3333;padding:8px;text-align:left}th{position:sticky;top:0;background:#111;color:#fff}code{background:#f2f2f2;padding:2px 6px;border-radius:6px}</style></head>
+<body>
+<h1>Fuel Tracker</h1>
+<p>Endpoints: <code>/health</code> <code>/check-prices</code></p>
+<p>Telegram: <code>/prices</code> (live) <code>/cached</code> (no refresh) <code>/backup</code> <code>/restore</code></p>
+<table><thead><tr><th>Station</th><th>Diesel</th><th>E10</th><th>E5</th><th>Updated</th></tr></thead><tbody>${rows}</tbody></table>
+</body></html>`);
+  } catch (e) {
+    res.status(500).send('error: ' + e.message);
+  }
 });
 
 app.get('/check-prices', async (req, res) => {
@@ -809,11 +960,11 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log('🤖 Bot started');
-  
-  // Авто-восстановление с Google Drive при старте (очень полезно на Render Free)
+
+  // Авто-восстановление JSON с Google Drive (Render Free friendly)
   if (process.env.AUTO_RESTORE_ON_START === '1') {
-    console.log('☁️ AUTO_RESTORE_ON_START: пытаюсь восстановить JSON с Google Drive...');
     try {
+      console.log('☁️ AUTO_RESTORE_ON_START: restoring JSON from Google Drive...');
       await restoreFromDrive();
       console.log('✅ Auto-restore done');
     } catch (e) {
@@ -822,15 +973,21 @@ app.listen(PORT, async () => {
   }
 
   // Первая проверка при запуске
-  checkAllPrices();
+  try {
+    await checkAllPrices();
+  } catch (e) {
+    console.log('⚠️ Initial check failed:', e.message);
+  }
 });
 
-// Автоматическая проверка каждые 30 минут (на всякий случай)
+// Автоматическая проверка каждые 5 минут (на всякий случай)
 setInterval(checkAllPrices, 5 * 60 * 1000);
 
-// Авто-бэкап на Google Drive раз в N минут (по умолчанию 360 = 6 часов)
-const BACKUP_INTERVAL_MIN = parseInt(process.env.BACKUP_INTERVAL_MIN || '360', 10);
+
+// Авто-бэкап на Google Drive
+const BACKUP_INTERVAL_MIN = parseInt(process.env.BACKUP_INTERVAL_MIN || '360', 10); // 6 часов
 setInterval(async () => {
+  if (!process.env.GDRIVE_KEYFILE) return;
   try {
     console.log('☁️ Auto-backup to Drive...');
     await backupToDrive();
@@ -839,4 +996,3 @@ setInterval(async () => {
     console.log('⚠️ Auto-backup failed:', e.message);
   }
 }, BACKUP_INTERVAL_MIN * 60 * 1000);
-
