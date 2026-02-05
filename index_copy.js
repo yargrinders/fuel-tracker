@@ -5,42 +5,13 @@ const cheerio = require('cheerio');
 const fs = require('fs').promises;
 const path = require('path');
 
-// Установка timezone для Германии
-process.env.TZ = 'Europe/Berlin';
-
 // Инициализация бота
-const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { 
-  polling: process.env.NODE_ENV !== 'production'  // Polling только локально
-});
-
-// Обработка ошибок polling (если случайно запущен дважды)
-bot.on('polling_error', (error) => {
-  console.error('⚠️ Polling error:', error.message);
-  if (error.message.includes('409')) {
-    console.error('🚨 ОШИБКА: Бот уже запущен в другом месте!');
-    console.error('   Проверь:');
-    console.error('   1. Нет ли "npm start" на твоём ПК?');
-    console.error('   2. Нет ли старого деплоя на Render?');
-    console.error('   3. Только один сервис должен быть активен!');
-  }
-});
+const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
 
 // Пути к файлам
-// Render Persistent Disk монтируется в /opt/render/project/data
-const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const STATIONS_FILE = path.join(__dirname, 'stations.json');
-const DATABASE_FILE = path.join(DATA_DIR, 'database.json');
-const USERS_FILE = path.join(DATA_DIR, 'users.json');
-
-// Создание директории data если не существует
-async function ensureDataDir() {
-  try {
-    await fs.mkdir(DATA_DIR, { recursive: true });
-    console.log(`📁 Data directory: ${DATA_DIR}`);
-  } catch (error) {
-    console.error('Error creating data directory:', error.message);
-  }
-}
+const DATABASE_FILE = path.join(__dirname, 'database.json');
+const USERS_FILE = path.join(__dirname, 'users.json');
 
 // Загрузка данных
 async function loadJSON(filepath, defaultValue = []) {
@@ -568,21 +539,8 @@ bot.onText(/\/prices/, async (msg) => {
     const latest = database[station.url]?.[0];
     if (latest) {
       // Формат: Station ID - NAME
-      const timestamp = new Date(latest.timestamp);
-      const dateStr = timestamp.toLocaleDateString('de-DE', {
-        day: '2-digit',
-        month: '2-digit',
-        year: 'numeric'
-      });
-      const timeStr = timestamp.toLocaleTimeString('de-DE', {
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false
-      });
-      
       message += `📍 *Station ${latest.id} - ${station.name}*\n`;
-      message += `   _${dateStr}, ${timeStr}_\n`;
+      message += `   _${new Date(latest.timestamp).toLocaleString('ru-RU')}_\n`;
       
       // Показываем цены если есть
       if (latest.prices.diesel) message += `   💰 Diesel: ${latest.prices.diesel}€\n`;
@@ -626,20 +584,8 @@ bot.onText(/\/cached/, async (msg) => {
       const timestamp = new Date(latest.timestamp);
       const ageMinutes = Math.floor((Date.now() - timestamp.getTime()) / 60000);
       
-      const dateStr = timestamp.toLocaleDateString('de-DE', {
-        day: '2-digit',
-        month: '2-digit',
-        year: 'numeric'
-      });
-      const timeStr = timestamp.toLocaleTimeString('de-DE', {
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false
-      });
-      
       message += `📍 *Station ${latest.id} - ${station.name}*\n`;
-      message += `   _${dateStr}, ${timeStr} (${ageMinutes} мин назад)_\n`;
+      message += `   _${timestamp.toLocaleString('ru-RU')} (${ageMinutes} мин назад)_\n`;
       
       if (latest.prices.diesel) message += `   💰 Diesel: ${latest.prices.diesel}€\n`;
       if (latest.prices.e5) message += `   💰 E5: ${latest.prices.e5}€\n`;
@@ -929,7 +875,7 @@ bot.on('callback_query', async (query) => {
 });
 
 // HTTP endpoint для UptimeRobot и веб-интерфейс
-const express = require('express');
+// const express = require('express');
 const app = express();
 
 // Middleware
@@ -1142,7 +1088,7 @@ app.get('/', (req, res) => {
         <button class="btn" onclick="getLogs()">📋 Показать логи</button>
         <a href="/api/stations" class="btn">📍 Список станций</a>
         <a href="/api/health" class="btn">💚 Health Check</a>
-        <a href="https://t.me/YOUR_BOT_USERNAME" class="btn" target="_blank">💬 Открыть бота</a>
+        <a href="https://t.me/e5_price_bot" class="btn" target="_blank">💬 Открыть бота</a>
       </div>
     </div>
     
@@ -1331,15 +1277,8 @@ app.get('/api/stations', async (req, res) => {
 const recentLogs = [];
 const originalConsoleLog = console.log;
 console.log = function(...args) {
-  const now = new Date();
-  const timeStr = now.toLocaleTimeString('de-DE', { 
-    hour: '2-digit', 
-    minute: '2-digit', 
-    second: '2-digit',
-    hour12: false 
-  });
   const message = args.join(' ');
-  recentLogs.push(`[${timeStr}] ${message}`);
+  recentLogs.push('[' + new Date().toLocaleTimeString('ru-RU') + '] ' + message);
   if (recentLogs.length > 50) recentLogs.shift();
   originalConsoleLog.apply(console, args);
 };
@@ -1358,54 +1297,13 @@ app.get('/check-prices', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, async () => {
+app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
-  
-  // Создаём директорию для данных
-  await ensureDataDir();
-  
-  // Настройка бота в зависимости от окружения
-  if (process.env.NODE_ENV === 'production') {
-    // Production: используем webhook
-    const WEBHOOK_URL = process.env.RENDER_EXTERNAL_URL || process.env.WEBHOOK_URL;
-    
-    if (WEBHOOK_URL) {
-      const webhookPath = `/bot${process.env.TELEGRAM_TOKEN}`;
-      const webhookFullUrl = `${WEBHOOK_URL}${webhookPath}`;
-      
-      try {
-        await bot.setWebHook(webhookFullUrl);
-        console.log('🤖 Bot started (webhook mode)');
-        console.log(`🔗 Webhook: ${webhookFullUrl}`);
-        
-        // Обработчик webhook
-        app.post(webhookPath, (req, res) => {
-          bot.processUpdate(req.body);
-          res.sendStatus(200);
-        });
-      } catch (error) {
-        console.error('❌ Webhook setup failed:', error.message);
-        console.log('⚠️ Falling back to polling...');
-        if (!bot.isPolling()) {
-          bot.startPolling();
-          console.log('🤖 Bot started (polling mode)');
-        }
-      }
-    } else {
-      console.log('⚠️ No WEBHOOK_URL, using polling');
-      if (!bot.isPolling()) {
-        bot.startPolling();
-        console.log('🤖 Bot started (polling mode)');
-      }
-    }
-  } else {
-    // Development: используем polling
-    console.log('🤖 Bot started (polling mode - development)');
-  }
+  console.log('🤖 Bot started');
   
   // Первая проверка при запуске
   checkAllPrices();
 });
 
 // Автоматическая проверка каждые 30 минут (на всякий случай)
-setInterval(checkAllPrices, 30 * 60 * 1000);
+setInterval(checkAllPrices, 5 * 60 * 1000);

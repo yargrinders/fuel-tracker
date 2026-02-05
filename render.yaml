@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: fuel-price-tracker
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATA_DIR
+        value: /opt/render/project/data
+    disk:
+      name: fuel-tracker-data
+      mountPath: /opt/render/project/data
+      sizeGB: 1
