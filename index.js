@@ -206,7 +206,34 @@ async function fetchStationPrices(url) {
 
     console.log(`\n🔍 Парсинг станции ${stationId} - ${stationName}`);
 
-    $('.price-field').each((i, priceField) => {
+    // ✅ НОВОЕ: самый надёжный парсинг — напрямую по ID current-price-N / suffix-price-N
+    // На clever-tanken обычно:
+    // 1 = Diesel, 2 = E10, 3 = E5 (как в твоём примере)
+    const directMap = [
+      { n: 1, key: 'diesel' },
+      { n: 2, key: 'e10' },
+      { n: 3, key: 'e5' }
+    ];
+
+    for (const m of directMap) {
+      const baseText = $(`#current-price-${m.n}`).first().text().trim();
+      const suffixText = $(`#suffix-price-${m.n}`).first().text().trim();
+      const price = fullPrice(baseText, suffixText);
+
+      if (!isNaN(price) && price > 0 && price < 3) {
+        prices[m.key] = price;
+      }
+    }
+
+    const gotAllById = prices.diesel && prices.e10 && prices.e5;
+
+    if (gotAllById) {
+      console.log(`  ✓ Diesel: ${prices.diesel}€ (по ID)`);
+      console.log(`  ✓ E10: ${prices.e10}€ (по ID)`);
+      console.log(`  ✓ E5: ${prices.e5}€ (по ID)`);
+    } else {
+
+      $('.price-field').each((i, priceField) => {
       const fieldHtml = $(priceField).html();
       const fieldText = $(priceField).text().toLowerCase();
       
@@ -246,6 +273,8 @@ async function fetchStationPrices(url) {
         }
       }
     });
+
+    }
 
     if (!prices.diesel || !prices.e5 || !prices.e10) {
       $('span[id^="current-price-"]').each((i, span) => {
