@@ -8,6 +8,10 @@ const fs = require('fs').promises;
 const path = require('path');
 const express = require('express');
 
+// Интервалы
+const PRICE_CHECK_INTERVAL = 5 * 60 * 1000; // 5 минут
+const AUTO_BACKUP_INTERVAL = 6 * 60 * 60 * 1000; // 6 часов
+
 // Установка timezone для Германии
 process.env.TZ = 'Europe/Berlin';
 
