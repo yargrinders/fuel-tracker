@@ -206,7 +206,34 @@ async function fetchStationPrices(url) {
 
     console.log(`\n🔍 Парсинг станции ${stationId} - ${stationName}`);
 
-    $('.price-field').each((i, priceField) => {
+    // ✅ НОВОЕ: самый надёжный парсинг — напрямую по ID current-price-N / suffix-price-N
+    // На clever-tanken обычно:
+    // 1 = Diesel, 2 = E10, 3 = E5 (как в твоём примере)
+    const directMap = [
+      { n: 1, key: 'diesel' },
+      { n: 2, key: 'e10' },
+      { n: 3, key: 'e5' }
+    ];
+
+    for (const m of directMap) {
+      const baseText = $(`#current-price-${m.n}`).first().text().trim();
+      const suffixText = $(`#suffix-price-${m.n}`).first().text().trim();
+      const price = fullPrice(baseText, suffixText);
+
+      if (!isNaN(price) && price > 0 && price < 3) {
+        prices[m.key] = price;
+      }
+    }
+
+    const gotAllById = prices.diesel && prices.e10 && prices.e5;
+
+    if (gotAllById) {
+      console.log(`  ✓ Diesel: ${prices.diesel}€ (по ID)`);
+      console.log(`  ✓ E10: ${prices.e10}€ (по ID)`);
+      console.log(`  ✓ E5: ${prices.e5}€ (по ID)`);
+    } else {
+
+      $('.price-field').each((i, priceField) => {
       const fieldHtml = $(priceField).html();
       const fieldText = $(priceField).text().toLowerCase();
       
@@ -246,6 +273,8 @@ async function fetchStationPrices(url) {
         }
       }
     });
+
+    }
 
     if (!prices.diesel || !prices.e5 || !prices.e10) {
       $('span[id^="current-price-"]').each((i, span) => {
@@ -310,6 +339,8 @@ async function checkAllPrices() {
     const current = await fetchStationPrices(station.url);
     
     if (!current || !current.prices) continue;
+    // Используем имя из stations.json (чтобы не показывать номер станции)
+    current.name = station.name || current.name;
     
     const lastEntry = database[station.url]?.[0];
     
@@ -422,7 +453,7 @@ async function notifyUsers(updates) {
       }
       
       if (userData.notifyChanges && update.changes.length > 0) {
-        alerts.push(`📊 ${update.name}\n${update.changes.join('\n')}`);
+        alerts.push(`📊 Изменение цены:\n${update.changes.join('\n')}`);
       }
       
       for (const alert of alerts) {
@@ -594,7 +625,7 @@ bot.onText(/\/prices/, async (msg) => {
     const latest = database[station.url]?.[0];
     if (latest) {
       const timestamp = new Date(latest.timestamp);
-      message += `📍 *Station ${latest.id} - ${station.name}*\n`;
+      message += `📍 *${station.name}*\n`;
       message += `   _${timestamp.toLocaleString('de-DE')}_\n`;
       
       if (latest.prices.diesel) message += `   💰 Diesel: ${latest.prices.diesel}€\n`;
@@ -711,15 +742,24 @@ bot.onText(/\/stats/, async (msg) => {
   bot.sendMessage(msg.chat.id, message, { parse_mode: 'Markdown' });
 });
 
-bot.onText(/\/settings/, async (msg) => {
-  const chatId = msg.chat.id;
-  const users = await loadJSON(USERS_FILE, {});
-  const userData = users[chatId] || {};
-  
-  const keyboard = {
+
+function buildTargetsText(userData) {
+  const t = (userData && userData.targets) ? userData.targets : {};
+  const lines = [];
+  if (t.e5 != null) lines.push(`E5: ${Number(t.e5).toFixed(3)}€`);
+  if (t.e10 != null) lines.push(`E10: ${Number(t.e10).toFixed(3)}€`);
+  if (t.diesel != null) lines.push(`Diesel: ${Number(t.diesel).toFixed(3)}€`);
+  return lines.length ? lines.join('\n') : 'не заданы';
+}
+
+function buildSettingsKeyboard(userData) {
+  return {
     inline_keyboard: [
       [
         { text: userData.notifications ? '🔔 Уведомления: ВКЛ' : '🔕 Уведомления: ВЫКЛ', callback_data: 'toggle_notifications' }
+      ],
+      [
+        { text: userData.notifyChanges ? '📊 Все изменения: ВКЛ' : '📊 Все изменения: ВЫКЛ', callback_data: 'toggle_changes' }
       ],
       [
         { text: 'Diesel', callback_data: 'fuel_diesel' },
@@ -728,8 +768,36 @@ bot.onText(/\/settings/, async (msg) => {
       ]
     ]
   };
-  
-  bot.sendMessage(chatId, '⚙️ *Настройки*\n\nВыбери тип топлива для аналитики:', {
+}
+
+function buildSettingsText(userData) {
+  const fuel = (userData.fuelType || 'diesel').toUpperCase();
+  const targetsText = buildTargetsText(userData);
+  return (
+    '⚙️ *Настройки*\n\n' +
+    `Текущий тип топлива: *${fuel}*\n\n` +
+    `🎯 *Целевые цены:*\n${targetsText}\n\n` +
+    'Выбери тип топлива для аналитики:'
+  );
+}
+
+bot.onText(/\/settings/, async (msg) => {
+  const chatId = msg.chat.id;
+  const users = await loadJSON(USERS_FILE, {});
+  const userData = users[chatId] || {};
+
+  // дефолты
+  if (userData.notifications === undefined) userData.notifications = true;
+  if (userData.notifyChanges === undefined) userData.notifyChanges = false;
+  if (!userData.targets) userData.targets = { diesel: null, e5: null, e10: null };
+  if (!userData.fuelType) userData.fuelType = 'diesel';
+
+  users[chatId] = userData;
+  await saveJSON(USERS_FILE, users);
+
+  const keyboard = buildSettingsKeyboard(userData);
+
+  bot.sendMessage(chatId, buildSettingsText(userData), {
     parse_mode: 'Markdown',
     reply_markup: keyboard
   });
@@ -737,19 +805,49 @@ bot.onText(/\/settings/, async (msg) => {
 
 bot.on('callback_query', async (query) => {
   const chatId = query.message.chat.id;
+  const messageId = query.message.message_id;
   const users = await loadJSON(USERS_FILE, {});
-  
-  if (!users[chatId]) users[chatId] = { notifications: true, fuelType: 'diesel', targets: {} };
-  
+
+  if (!users[chatId]) {
+    users[chatId] = {
+      notifications: true,
+      notifyChanges: false,
+      fuelType: 'diesel',
+      targets: { diesel: null, e5: null, e10: null }
+    };
+  }
+
+  const userData = users[chatId];
+  if (userData.notifications === undefined) userData.notifications = true;
+  if (userData.notifyChanges === undefined) userData.notifyChanges = false;
+  if (!userData.targets) userData.targets = { diesel: null, e5: null, e10: null };
+  if (!userData.fuelType) userData.fuelType = 'diesel';
+
   if (query.data === 'toggle_notifications') {
-    users[chatId].notifications = !users[chatId].notifications;
+    userData.notifications = !userData.notifications;
     await saveJSON(USERS_FILE, users);
-    bot.answerCallbackQuery(query.id, { text: users[chatId].notifications ? 'Уведомления включены' : 'Уведомления выключены' });
+    bot.answerCallbackQuery(query.id, { text: userData.notifications ? 'Уведомления включены' : 'Уведомления выключены' });
+  } else if (query.data === 'toggle_changes') {
+    userData.notifyChanges = !userData.notifyChanges;
+    await saveJSON(USERS_FILE, users);
+    bot.answerCallbackQuery(query.id, { text: userData.notifyChanges ? 'Изменения включены' : 'Изменения выключены' });
   } else if (query.data.startsWith('fuel_')) {
     const fuel = query.data.replace('fuel_', '');
-    users[chatId].fuelType = fuel;
+    userData.fuelType = fuel;
     await saveJSON(USERS_FILE, users);
     bot.answerCallbackQuery(query.id, { text: `Выбрано: ${fuel.toUpperCase()}` });
+  }
+
+  // Обновляем экран настроек без новых сообщений
+  try {
+    await bot.editMessageText(buildSettingsText(userData), {
+      chat_id: chatId,
+      message_id: messageId,
+      parse_mode: 'Markdown',
+      reply_markup: buildSettingsKeyboard(userData)
+    });
+  } catch (e) {
+    // если сообщение уже не существует/не редактируется — просто молчим
   }
 });
 
@@ -793,117 +891,211 @@ bot.onText(/\/restore/, async (msg) => {
 // ========== EXPRESS WEB SERVER ==========
 
 // ✅ ИСПРАВЛЕНИЕ 5: Современный HTML Dashboard
-
-// ========== EXPRESS WEB SERVER ==========
-
 const app = express();
 app.use(express.json());
-
-// Статика (CSS)
-app.use('/css', express.static(path.join(__dirname, 'css')));
-
-function escapeHtml(s) {
-  return String(s ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-function tokenReplace(template, tokens) {
-  let out = template;
-  for (const [k, v] of Object.entries(tokens)) {
-    out = out.split(k).join(String(v));
-  }
-  return out;
-}
-
-function fmtPrice(v) {
-  if (v == null) return null;
-  const n = Number(v);
-  if (!Number.isFinite(n)) return null;
-  return n.toFixed(3);
-}
-
-function buildStationsRows(stations, database) {
-  const now = new Date();
-  return stations.map(st => {
-    const latest = database[st.url]?.[0];
-    const ts = latest?.timestamp ? new Date(latest.timestamp).toLocaleString('de-DE') : 'N/A';
-
-    const isOpen = isStationOpen(st, now);
-    const badgeClass = isOpen ? 'ok' : 'bad';
-    const badgeText = isOpen ? 'open' : 'closed';
-
-    const diesel = latest?.prices?.diesel != null ? fmtPrice(latest.prices.diesel) : null;
-    const e5 = latest?.prices?.e5 != null ? fmtPrice(latest.prices.e5) : null;
-    const e10 = latest?.prices?.e10 != null ? fmtPrice(latest.prices.e10) : null;
-
-    const tags = [
-      diesel ? `<span class="tag">Diesel <small>${diesel}€</small></span>` : '',
-      e5 ? `<span class="tag">E5 <small>${e5}€</small></span>` : '',
-      e10 ? `<span class="tag">E10 <small>${e10}€</small></span>` : ''
-    ].filter(Boolean).join('\n                  ');
-
-    const searchName = escapeHtml((st.name || '').toLowerCase());
-
-    return `
-              <div class="row" data-name="${searchName}">
-                <div class="station">
-                  <b>${escapeHtml(st.name || 'Station')}</b>
-                  <span>last: ${escapeHtml(ts)}</span>
-                </div>
-                <div class="prices">
-                  ${tags || '<span class="tag">no data</span>'}
-                </div>
-                <div class="meta">
-                  <span class="badge ${badgeClass}"><span class="dot"></span>${badgeText}</span>
-                </div>
-              </div>
-    `;
-  }).join('');
-}
 
 app.get('/', async (req, res) => {
   const stations = await loadJSON(STATIONS_FILE).catch(() => []);
   const database = await loadJSON(DATABASE_FILE, {}).catch(() => ({}));
   const users = await loadJSON(USERS_FILE, {}).catch(() => ({}));
-
-  const totalRecords = Object.values(database).reduce((sum, arr) => sum + (Array.isArray(arr) ? arr.length : 0), 0);
-  const uptimeMin = Math.floor((Date.now() - serverStartTime) / 1000 / 60);
-
+  
+  const totalRecords = Object.values(database).reduce((sum, arr) => sum + arr.length, 0);
+  const uptime = Math.floor((Date.now() - serverStartTime) / 1000 / 60);
+  
   let lastCheck = null;
   for (const entries of Object.values(database)) {
-    if (Array.isArray(entries) && entries.length > 0) {
+    if (entries.length > 0) {
       const ts = new Date(entries[0].timestamp);
       if (!lastCheck || ts > lastCheck) lastCheck = ts;
     }
   }
-
-  const templatePath = path.join(__dirname, 'info.html');
-  let template = '';
-  try {
-    template = await fs.readFile(templatePath, 'utf8');
-  } catch (e) {
-    res.status(500).send('info.html not found');
-    return;
-  }
-
-  const tokens = {
-    '{{STATIONS_COUNT}}': stations.length,
-    '{{TOTAL_RECORDS}}': totalRecords,
-    '{{USERS_COUNT}}': Object.keys(users).length,
-    '{{UPTIME_MIN}}': uptimeMin,
-    '{{STARTED_AT}}': serverStartTime.toLocaleString('de-DE'),
-    '{{UPTIME_TEXT}}': `${uptimeMin} минут`,
-    '{{LAST_CHECK}}': lastCheck ? lastCheck.toLocaleString('de-DE') : 'N/A',
-    '{{SERVICE_HOST}}': escapeHtml(req.get('host') || ''),
-    '{{STATIONS_ROWS}}': buildStationsRows(stations, database)
-  };
-
-  res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.send(tokenReplace(template, tokens));
+  
+  res.send(`<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>⛽ Fuel Tracker Dashboard</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+    }
+    .sidebar {
+      width: 250px;
+      background: rgba(255,255,255,0.95);
+      backdrop-filter: blur(10px);
+      box-shadow: 2px 0 10px rgba(0,0,0,0.1);
+      padding: 20px;
+    }
+    .logo {
+      font-size: 24px;
+      font-weight: bold;
+      color: #667eea;
+      margin-bottom: 30px;
+      text-align: center;
+    }
+    .nav-item {
+      display: block;
+      padding: 12px 15px;
+      margin-bottom: 10px;
+      background: white;
+      border-radius: 8px;
+      text-decoration: none;
+      color: #333;
+      transition: all 0.3s;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+    }
+    .nav-item:hover {
+      transform: translateX(5px);
+      box-shadow: 0 4px 10px rgba(102, 126, 234, 0.3);
+    }
+    .main {
+      flex: 1;
+      padding: 30px;
+      overflow-y: auto;
+    }
+    .header {
+      background: white;
+      border-radius: 15px;
+      padding: 30px;
+      margin-bottom: 20px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+      text-align: center;
+    }
+    .header h1 {
+      font-size: 2em;
+      color: #667eea;
+      margin-bottom: 5px;
+    }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: #00cc00;
+      font-weight: 500;
+    }
+    .status::before {
+      content: '';
+      width: 10px;
+      height: 10px;
+      background: #00cc00;
+      border-radius: 50%;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 20px;
+      margin-bottom: 20px;
+    }
+    .stat-card {
+      background: white;
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+      text-align: center;
+    }
+    .stat-card h3 {
+      font-size: 2.5em;
+      color: #667eea;
+      margin-bottom: 5px;
+    }
+    .stat-card p {
+      color: #666;
+      font-size: 0.9em;
+    }
+    .card {
+      background: white;
+      border-radius: 12px;
+      padding: 25px;
+      margin-bottom: 20px;
+      box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+    }
+    .card h2 {
+      color: #333;
+      margin-bottom: 15px;
+    }
+    .station-item {
+      padding: 10px;
+      border-bottom: 1px solid #eee;
+    }
+    .station-item strong {
+      color: #667eea;
+    }
+  </style>
+</head>
+<body>
+  <div class="sidebar">
+    <div class="logo">⛽ Fuel Tracker</div>
+    <a href="/" class="nav-item">📊 Dashboard</a>
+    <a href="/database.json" class="nav-item">💾 Database</a>
+    <a href="/users.json" class="nav-item">👥 Users</a>
+    <a href="/stations.json" class="nav-item">📍 Stations</a>
+    <a href="/api/stats" class="nav-item">📈 Stats API</a>
+  </div>
+  <div class="main">
+    <div class="header">
+      <h1>⛽ Fuel Price Tracker</h1>
+      <div class="status">Online</div>
+      <p style="margin-top: 10px; color: #666;">Render.com • Europe/Berlin</p>
+    </div>
+    <div class="stats-grid">
+      <div class="stat-card">
+        <h3>${stations.length}</h3>
+        <p>Станций</p>
+      </div>
+      <div class="stat-card">
+        <h3>${totalRecords}</h3>
+        <p>Записей в БД</p>
+      </div>
+      <div class="stat-card">
+        <h3>${Object.keys(users).length}</h3>
+        <p>Пользователей</p>
+      </div>
+      <div class="stat-card">
+        <h3>${uptime} мин</h3>
+        <p>Uptime</p>
+      </div>
+    </div>
+    <div class="card">
+      <h2>📍 Станции</h2>
+      ${stations.map(s => {
+        const latest = database[s.url]?.[0];
+        return `
+          <div class="station-item">
+            <strong>${s.name}</strong>
+            ${latest ? `
+              <div style="margin-top: 5px; font-size: 0.9em; color: #666;">
+                💰 Diesel: ${latest.prices.diesel || 'N/A'}€ | 
+                E5: ${latest.prices.e5 || 'N/A'}€ | 
+                E10: ${latest.prices.e10 || 'N/A'}€
+                <br>
+                🕐 ${new Date(latest.timestamp).toLocaleString('de-DE')}
+              </div>
+            ` : '<div style="color: #999;">Нет данных</div>'}
+          </div>
+        `;
+      }).join('')}
+    </div>
+    <div class="card">
+      <h2>ℹ️ Информация</h2>
+      <p><strong>Запущен:</strong> ${serverStartTime.toLocaleString('de-DE')}</p>
+      <p><strong>Uptime:</strong> ${uptime} минут</p>
+      <p><strong>Последняя проверка:</strong> ${lastCheck ? lastCheck.toLocaleString('de-DE') : 'N/A'}</p>
+      <p><strong>Автобэкап:</strong> Каждые 6 часов</p>
+      <p><strong>Проверка цен:</strong> Каждые 5 минут (только открытые станции)</p>
+    </div>
+  </div>
+</body>
+</html>`);
 });
 
 app.get('/database.json', async (req, res) => {
@@ -925,10 +1117,10 @@ app.get('/api/stats', async (req, res) => {
   const stations = await loadJSON(STATIONS_FILE, []);
   const database = await loadJSON(DATABASE_FILE, {});
   const users = await loadJSON(USERS_FILE, {});
-
-  const totalRecords = Object.values(database).reduce((sum, arr) => sum + (Array.isArray(arr) ? arr.length : 0), 0);
+  
+  const totalRecords = Object.values(database).reduce((sum, arr) => sum + arr.length, 0);
   const uptime = Math.floor((Date.now() - serverStartTime) / 1000);
-
+  
   res.json({
     stations: stations.length,
     totalRecords,
@@ -944,6 +1136,65 @@ app.get('/check-prices', async (req, res) => {
   const updates = await checkAllPrices();
   res.json({ status: 'success', updates: updates.length });
 });
+
+// ============================================================
+// ✅ ИСПРАВЛЕНИЕ 8: НАСТРОЙКИ ТАЙМИНГОВ (В КОНЦЕ ФАЙЛА)
+// ============================================================
+
+console.log('\n' + '='.repeat(60));
+console.log('🚀 FUEL PRICE TRACKER');
+console.log('='.repeat(60));
+console.log(`🕐 Запущен: ${serverStartTime.toLocaleString('de-DE')}`);
+console.log('='.repeat(60) + '\n');
+
+// ✅ ИСПРАВЛЕНИЕ 3: Автобэкап каждые 6 часов
+const AUTO_BACKUP_INTERVAL = 6 * 60 * 60 * 1000; // 6 часов
+
+setInterval(async () => {
+  try {
+    console.log('⏰ Автобэкап (каждые 6 часов)');
+    await backupToDrive();
+    console.log('✅ Автобэкап завершён успешно');
+  } catch (error) {
+    console.error('❌ Ошибка автобэкапа:', error.message);
+  }
+}, AUTO_BACKUP_INTERVAL);
+
+// Первый бэкап через 5 минут после запуска
+setTimeout(async () => {
+  try {
+    console.log('⏰ Первый бэкап после запуска');
+    await backupToDrive();
+    console.log('✅ Первый бэкап завершён');
+  } catch (error) {
+    console.error('❌ Ошибка первого бэкапа:', error.message);
+  }
+}, 5 * 60 * 1000);
+
+// Проверка цен каждые 5 минут
+const PRICE_CHECK_INTERVAL = 5 * 60 * 1000; // 5 минут
+
+setInterval(async () => {
+  try {
+    await checkAllPrices();
+  } catch (error) {
+    console.error('❌ Ошибка проверки цен:', error.message);
+  }
+}, PRICE_CHECK_INTERVAL);
+
+// Восстановление при старте (если включено)
+if (process.env.AUTO_RESTORE_ON_START === '1') {
+  (async () => {
+    try {
+      console.log('🔄 Автовосстановление при старте...');
+      await restoreFromDrive();
+      console.log('✅ Данные восстановлены из Google Drive');
+    } catch (error) {
+      console.error('⚠️ Автовосстановление не удалось:', error.message);
+    }
+  })();
+}
+
 // Запуск Express сервера
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

@@ -5,9 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js",
-    "drive": "node google-drive-backup.js",
-    "test:parser": "node test-parser.js"
+    "dev": "nodemon index.js"
   },
   "keywords": ["telegram", "fuel", "prices", "bot"],
   "author": "",

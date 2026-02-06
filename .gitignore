@@ -9,7 +9,7 @@ yarn.lock
 .env.*.local
 
 # Database (опционально, если не хочешь коммитить историю цен)
-database.json
+
 
 # Logs
 logs/

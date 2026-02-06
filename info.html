@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Fuel Tracker • Check</title>
+  <meta name="color-scheme" content="dark light" />
+  <link rel="stylesheet" href="/css/main.css">
+</head>
+
+<body>
+  <div class="app">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo" aria-hidden="true">⛽</div>
+        <div>
+          <h1>Fuel Tracker</h1>
+          <p>check • render • eu</p>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <a class="active" href="/">
+          <span class="ico">▦</span><span>Dashboard</span>
+        </a>
+        <a href="/database.json">
+          <span class="ico">🗄</span><span>Database</span>
+        </a>
+        <a href="/users.json">
+          <span class="ico">👤</span><span>Users</span>
+        </a>
+        <a href="/stations.json">
+          <span class="ico">📍</span><span>Stations</span>
+        </a>
+        <a href="/api/stats">
+          <span class="ico">⚡</span><span>Stats API</span>
+        </a>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="pill">
+          <div class="left">
+            <b>Service</b>
+            <span>{{SERVICE_HOST}}</span>
+          </div>
+          <div class="status"><span class="dot"></span> online</div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <main class="main">
+      <!-- Topbar -->
+      <header class="topbar">
+        <div class="title">
+          <h2>Fuel Price Tracker <span class="badge ok"><span class="dot"></span>ONLINE</span></h2>
+          <div class="sub">Render.com • Europe/Berlin • v1 check</div>
+        </div>
+
+        <div class="actions">
+          <div class="search" role="search">
+            <span class="ico">⌕</span>
+            <input id="q" placeholder="Поиск станций / город / бренд…" />
+            <span class="kbd">Ctrl K</span>
+          </div>
+          <button class="btn" id="themeBtn" type="button" title="Toggle theme">
+            🌙 <span style="opacity:.85">Theme</span>
+          </button>
+          <button class="btn primary" type="button" onclick="location.reload()">
+            ⟳ Refresh
+          </button>
+        </div>
+      </header>
+
+      <section class="grid">
+        <!-- Stats -->
+        <div class="card col-3">
+          <div class="hd"><h3>stations</h3><div class="spark"></div></div>
+          <div class="bd">
+            <div class="stat"><div class="num" id="stStations">{{STATIONS_COUNT}}</div><div class="label">шт</div></div>
+          </div>
+        </div>
+        <div class="card col-3">
+          <div class="hd"><h3>records</h3><div class="spark"></div></div>
+          <div class="bd">
+            <div class="stat"><div class="num" id="stRecords">{{TOTAL_RECORDS}}</div><div class="label">в БД</div></div>
+          </div>
+        </div>
+        <div class="card col-3">
+          <div class="hd"><h3>users</h3><div class="spark"></div></div>
+          <div class="bd">
+            <div class="stat"><div class="num" id="stUsers">{{USERS_COUNT}}</div><div class="label">актив</div></div>
+          </div>
+        </div>
+        <div class="card col-3">
+          <div class="hd"><h3>uptime</h3><div class="spark"></div></div>
+          <div class="bd">
+            <div class="stat"><div class="num" id="stUptime">{{UPTIME_MIN}}</div><div class="label">мин</div></div>
+          </div>
+        </div>
+
+        <!-- Stations -->
+        <div class="card col-7">
+          <div class="hd">
+            <h3>📍 stations</h3>
+            <span class="badge"><span class="dot" style="background:var(--brand2)"></span>auto-check: 5 min</span>
+          </div>
+          <div class="bd">
+            <div class="list" id="stationsList">
+              {{STATIONS_ROWS}}
+            </div>
+          </div>
+        </div>
+
+        <!-- Info -->
+        <div class="card col-5">
+          <div class="hd">
+            <h3>ℹ info</h3>
+            <span class="badge"><span class="dot" style="background:var(--brand)"></span>cron</span>
+          </div>
+          <div class="bd">
+            <div class="kv">
+              <div class="item">
+                <div class="k">started</div>
+                <div class="v" id="infoStarted">{{STARTED_AT}}</div>
+              </div>
+              <div class="item">
+                <div class="k">uptime</div>
+                <div class="v" id="infoUptime">{{UPTIME_TEXT}}</div>
+              </div>
+              <div class="item">
+                <div class="k">last check</div>
+                <div class="v" id="infoLast">{{LAST_CHECK}}</div>
+              </div>
+              <div class="item">
+                <div class="k">auto backup</div>
+                <div class="v" id="infoBackup">каждые 6 часов</div>
+              </div>
+              <div class="item">
+                <div class="k">price scan</div>
+                <div class="v" id="infoScan">каждые 5 минут (open only)</div>
+              </div>
+              <div class="item">
+                <div class="k">env</div>
+                <div class="v" id="infoEnv">prod • Europe/Berlin</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    // Theme: saved to localStorage
+    const root = document.documentElement;
+    const themeBtn = document.getElementById("themeBtn");
+    const saved = localStorage.getItem("theme");
+    if (saved) root.setAttribute("data-theme", saved);
+
+    function toggleTheme(){
+      const cur = root.getAttribute("data-theme") || "dark";
+      const next = cur === "dark" ? "light" : "dark";
+      root.setAttribute("data-theme", next);
+      localStorage.setItem("theme", next);
+      themeBtn.firstChild.textContent = next === "dark" ? "🌙" : "☀️";
+    }
+
+    themeBtn.addEventListener("click", toggleTheme);
+    themeBtn.firstChild.textContent = (root.getAttribute("data-theme") || "dark") === "dark" ? "🌙" : "☀️";
+
+    // Quick search (Ctrl+K) + filtering stations
+    const q = document.getElementById("q");
+    const rows = [...document.querySelectorAll("#stationsList .row")];
+
+    function filter(){
+      const v = (q.value || "").trim().toLowerCase();
+      rows.forEach(r => {
+        const name = (r.getAttribute("data-name") || "").toLowerCase();
+        r.style.display = !v || name.includes(v) ? "" : "none";
+      });
+    }
+    q?.addEventListener("input", filter);
+
+    window.addEventListener("keydown", (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k"){
+        e.preventDefault();
+        q?.focus();
+      }
+      if (e.key === "Escape") q?.blur();
+    });
+  </script>
+</body>
+</html>

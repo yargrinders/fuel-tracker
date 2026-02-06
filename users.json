@@ -1,12 +1,56 @@
 {
-  "910176803": {
+  "566994921": {
     "notifications": true,
     "notifyChanges": false,
     "targets": {
       "diesel": null,
-      "e5": 1.739,
+      "e5": 2.129,
       "e10": null
     },
-    "fuelType": "e5"
+    "fuelType": "e5",
+    "lastAlerts": {
+      "https://www.clever-tanken.de/tankstelle_details/186650": {
+        "diesel": null,
+        "e5": 1.779,
+        "e10": null
+      },
+      "https://www.clever-tanken.de/tankstelle_details/1203": {
+        "diesel": null,
+        "e5": 1.809,
+        "e10": null
+      },
+      "https://www.clever-tanken.de/tankstelle_details/12291": {
+        "diesel": null,
+        "e5": 1.849,
+        "e10": null
+      }
+    }
+  },
+  "910176803": {
+    "notifications": true,
+    "notifyChanges": true,
+    "targets": {
+      "diesel": null,
+      "e5": 9.999,
+      "e10": null
+    },
+    "fuelType": "e5",
+    "lastAlerts": {
+      "https://www.clever-tanken.de/tankstelle_details/1203": {
+        "diesel": null,
+        "e5": 1.809,
+        "e10": null
+      },
+      "https://www.clever-tanken.de/tankstelle_details/186650": {
+        "diesel": null,
+        "e5": 1.779,
+        "e10": null
+      },
+      "https://www.clever-tanken.de/tankstelle_details/12291": {
+        "diesel": null,
+        "e5": 1.849,
+        "e10": null
+      }
+    }
   }
 }
