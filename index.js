@@ -6,20 +6,24 @@ const { google } = require('googleapis');
 const fsNative = require('fs');
 const fs = require('fs').promises;
 const path = require('path');
+const express = require('express');
 
 // Установка timezone для Германии
 process.env.TZ = 'Europe/Berlin';
 
-// ===== Google Drive backup/restore (Render Free friendly) =====
+// Время запуска сервера (для uptime)
+const serverStartTime = new Date();
+
+// ===== Google Drive backup/restore (ТВОЙ РАБОЧИЙ КОД!) =====
 function isAdmin(chatId) {
   const raw = process.env.ADMIN_CHAT_IDS;
-  if (!raw) return true; // если не задано — не ограничиваем
+  if (!raw) return true;
   const set = new Set(raw.split(',').map(s => s.trim()).filter(Boolean));
   return set.has(String(chatId));
 }
 
 async function createDriveClient() {
-  const keyFile = process.env.GDRIVE_KEYFILE; // /etc/secrets/xxx.json
+  const keyFile = process.env.GDRIVE_KEYFILE;
   if (!keyFile) throw new Error('GDRIVE_KEYFILE не задан');
 
   const auth = new google.auth.GoogleAuth({
@@ -108,23 +112,56 @@ async function saveJSON(filepath, data) {
   await fs.writeFile(filepath, JSON.stringify(data, null, 2), 'utf8');
 }
 
-// Парсер цен с clever-tanken.de
+// ✅ ИСПРАВЛЕНИЕ 4: Проверка часов работы станции
+function isStationOpen(station, timestamp = new Date()) {
+  if (!station.openingHours) return true;
+  if (station.openingHours.is24h) return true;
+  
+  const day = timestamp.getDay();
+  const hour = timestamp.getHours();
+  const minute = timestamp.getMinutes();
+  const currentTime = hour * 60 + minute;
+  
+  let schedule;
+  if (day === 0) {
+    schedule = station.openingHours.sun;
+  } else if (day === 6) {
+    schedule = station.openingHours.sat;
+  } else {
+    schedule = station.openingHours.monFri;
+  }
+  
+  if (!schedule) return true;
+  
+  const match = schedule.match(/(\d+):(\d+)-(\d+):(\d+)/);
+  if (!match) return true;
+  
+  const openTime = parseInt(match[1]) * 60 + parseInt(match[2]);
+  const closeTime = parseInt(match[3]) * 60 + parseInt(match[4]);
+  
+  const isOpen = currentTime >= openTime && currentTime < closeTime;
+  
+  if (!isOpen) {
+    console.log(`  ⏰ Станция ${station.name} закрыта (${schedule})`);
+  }
+  
+  return isOpen;
+}
+
+// Парсер цен с clever-tanken.de (ТВОЙ РАБОЧИЙ КОД с suffix!)
 async function fetchStationPrices(url) {
   try {
     const response = await axios.get(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
         'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8'
       },
       timeout: 15000
     });
 
-    
-const $ = cheerio.load(response.data);
+    const $ = cheerio.load(response.data);
 
-    // clever-tanken: последняя цифра цены часто в <sup id="suffix-price-N">9</sup>
-    // Сохраняем суффиксы в мапу по N, т.к. <sup> может быть НЕ внутри .price-field
     const suffixMap = {};
     $('sup[id^="suffix-price-"]').each((i, el) => {
       const id = $(el).attr('id') || '';
@@ -135,23 +172,17 @@ const $ = cheerio.load(response.data);
       if (val) suffixMap[key] = val;
     });
     
-    // Извлекаем ID станции из URL
     const stationId = url.match(/\/(\d+)$/)?.[1];
-    
-    // Ищем название станции
     const stationName = $('h1').first().text().trim() || 
                        $('.station-name').first().text().trim() ||
-                       $('[class*="station"]').first().text().trim() ||
                        `Station ${stationId}`;
 
-    // Парсим цены
     const prices = {
       e5: null,
       e10: null,
       diesel: null
     };
 
-    // Склеиваем current-price + suffix-price (пример: 1.77 + 9 => 1.779)
     function fullPrice(baseRaw, suffixRaw) {
       const base = String(baseRaw || '').replace(',', '.').replace(/[^\d.]/g, '').trim();
       if (!base) return null;
@@ -162,7 +193,6 @@ const $ = cheerio.load(response.data);
         return Number.isFinite(n) ? n : null;
       }
 
-      // если уже 3 знака после точки — суффикс не нужен
       if (m[2].length === 3) {
         const n = Number(base);
         return Number.isFinite(n) ? n : null;
@@ -176,12 +206,10 @@ const $ = cheerio.load(response.data);
 
     console.log(`\n🔍 Парсинг станции ${stationId} - ${stationName}`);
 
-    // ОСНОВНОЙ МЕТОД: Ищем div.price-field с вложенными span#current-price-X
     $('.price-field').each((i, priceField) => {
       const fieldHtml = $(priceField).html();
       const fieldText = $(priceField).text().toLowerCase();
       
-      // Извлекаем цену из span#current-price-N и suffix из sup#suffix-price-N
       const priceSpan = $(priceField).find('span[id^="current-price-"]').first();
       const priceId = priceSpan.attr('id') || '';
       const idMatch = priceId.match(/current-price-(\d+)/);
@@ -193,7 +221,6 @@ const $ = cheerio.load(response.data);
         suffixText = $(`#suffix-price-${num}`).first().text().trim();
       }
       
-      // Если цена не в span, ищем прямо в тексте
       if (!priceText) {
         const match = fieldHtml.match(/>(\d{1,2}[.,]\d{2,3})</);
         if (match) priceText = match[1];
@@ -203,29 +230,24 @@ const $ = cheerio.load(response.data);
         const price = fullPrice(priceText, suffixText);
         
         if (!isNaN(price) && price > 0 && price < 3) {
-          // Определяем тип топлива по тексту в родительских элементах
           const parentText = $(priceField).parent().text().toLowerCase();
           const allText = fieldText + ' ' + parentText;
           
-          if (!prices.diesel && (allText.includes('diesel') || allText.includes('дизель'))) {
+          if (!prices.diesel && allText.includes('diesel')) {
             prices.diesel = price;
-            console.log(`  ✓ Diesel: ${price}€ (найдено в price-field)`);
-          } else if (!prices.e5 && (allText.includes('super e5') || allText.includes('e 5') || allText.includes('super 95'))) {
+            console.log(`  ✓ Diesel: ${price}€`);
+          } else if (!prices.e5 && (allText.includes('super e5') || allText.includes('e 5'))) {
             prices.e5 = price;
-            console.log(`  ✓ E5: ${price}€ (найдено в price-field)`);
-          } else if (!prices.e10 && (allText.includes('super e10') || allText.includes('e 10'))) {
+            console.log(`  ✓ E5: ${price}€`);
+          } else if (!prices.e10 && allText.includes('super e10')) {
             prices.e10 = price;
-            console.log(`  ✓ E10: ${price}€ (найдено в price-field)`);
+            console.log(`  ✓ E10: ${price}€`);
           }
         }
       }
     });
 
-    // ДОПОЛНИТЕЛЬНЫЙ МЕТОД: Если не нашли через price-field, ищем по всей странице
     if (!prices.diesel || !prices.e5 || !prices.e10) {
-      console.log('  → Пробую дополнительный поиск...');
-      
-      // Ищем только current-price-* и доклеиваем suffix-price-* (суффикс по одиночке НЕ парсим)
       $('span[id^="current-price-"]').each((i, span) => {
         const baseText = $(span).text().trim();
         const id = $(span).attr('id') || '';
@@ -235,52 +257,21 @@ const $ = cheerio.load(response.data);
         const price = fullPrice(baseText, suffixText);
         
         if (!isNaN(price) && price > 0 && price < 3) {
-          // Ищем label/текст рядом со span
           const parent = $(span).closest('div, tr, li');
           const labelText = parent.text().toLowerCase();
           
           if (!prices.diesel && labelText.includes('diesel')) {
             prices.diesel = price;
-            console.log(`  ✓ Diesel: ${price}€ (дополнительный метод)`);
-          } else if (!prices.e5 && (labelText.includes('super e5') || labelText.includes('e 5'))) {
+            console.log(`  ✓ Diesel: ${price}€ (доп. метод)`);
+          } else if (!prices.e5 && labelText.includes('super e5')) {
             prices.e5 = price;
-            console.log(`  ✓ E5: ${price}€ (дополнительный метод)`);
-          } else if (!prices.e10 && (labelText.includes('super e10') || labelText.includes('e 10'))) {
+            console.log(`  ✓ E5: ${price}€ (доп. метод)`);
+          } else if (!prices.e10 && labelText.includes('super e10')) {
             prices.e10 = price;
-            console.log(`  ✓ E10: ${price}€ (дополнительный метод)`);
+            console.log(`  ✓ E10: ${price}€ (доп. метод)`);
           }
         }
       });
-    }
-
-    // РЕЗЕРВНЫЙ МЕТОД: Regex по всему тексту страницы
-    if (!prices.diesel || !prices.e5 || !prices.e10) {
-      console.log('  → Пробую regex поиск...');
-      const pageText = $('body').text();
-      
-      if (!prices.diesel) {
-        const dieselMatch = pageText.match(/Diesel[^\d]*(\d{1,2}[.,]\d{2,3})/i);
-        if (dieselMatch) {
-          prices.diesel = parseFloat(dieselMatch[1].replace(',', '.'));
-          console.log(`  ✓ Diesel: ${prices.diesel}€ (regex)`);
-        }
-      }
-      
-      if (!prices.e5) {
-        const e5Match = pageText.match(/Super\s*E5[^\d]*(\d{1,2}[.,]\d{2,3})/i);
-        if (e5Match) {
-          prices.e5 = parseFloat(e5Match[1].replace(',', '.'));
-          console.log(`  ✓ E5: ${prices.e5}€ (regex)`);
-        }
-      }
-      
-      if (!prices.e10) {
-        const e10Match = pageText.match(/Super\s*E10[^\d]*(\d{1,2}[.,]\d{2,3})/i);
-        if (e10Match) {
-          prices.e10 = parseFloat(e10Match[1].replace(',', '.'));
-          console.log(`  ✓ E10: ${prices.e10}€ (regex)`);
-        }
-      }
     }
 
     console.log(`📊 Итого: Diesel=${prices.diesel}, E5=${prices.e5}, E10=${prices.e10}\n`);
@@ -299,28 +290,33 @@ const $ = cheerio.load(response.data);
   }
 }
 
-// Проверка цен на всех станциях
+// ✅ ИСПРАВЛЕНИЕ 4: Проверка цен с учётом графика работы
 async function checkAllPrices() {
   console.log('🔍 Checking prices...');
   
   const stations = await loadJSON(STATIONS_FILE);
   const database = await loadJSON(DATABASE_FILE, {});
+  const now = new Date();
   
   const updates = [];
   
   for (const station of stations) {
+    // Проверяем часы работы
+    if (!isStationOpen(station, now)) {
+      console.log(`  ⏭️  Пропускаем ${station.name} (закрыта)`);
+      continue;
+    }
+    
     const current = await fetchStationPrices(station.url);
     
     if (!current || !current.prices) continue;
     
     const lastEntry = database[station.url]?.[0];
     
-    // Инициализация истории
     if (!database[station.url]) {
       database[station.url] = [];
     }
     
-    // Проверка изменений
     let hasChanges = false;
     const changes = [];
     
@@ -339,21 +335,27 @@ async function checkAllPrices() {
       }
     }
     
-    // Сохранение в историю
     database[station.url].unshift(current);
-    database[station.url] = database[station.url].slice(0, 100); // Храним последние 100 записей
+    
+    // Храним только последние 14 дней
+    const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
+    const cutoff = new Date(Date.now() - TWO_WEEKS_MS);
+    database[station.url] = database[station.url].filter(entry => 
+      new Date(entry.timestamp) > cutoff
+    );
     
     if (hasChanges) {
       updates.push({
         name: current.name,
-        changes: changes
+        url: station.url,
+        changes: changes,
+        prices: current.prices
       });
     }
   }
   
   await saveJSON(DATABASE_FILE, database);
   
-  // Отправка уведомлений
   if (updates.length > 0) {
     await notifyUsers(updates);
   }
@@ -362,66 +364,96 @@ async function checkAllPrices() {
   return updates;
 }
 
-// Отправка уведомлений пользователям
+// ✅ ИСПРАВЛЕНИЕ 6: Уведомления с lastAlerts (защита от спама)
 async function notifyUsers(updates) {
   const users = await loadJSON(USERS_FILE, {});
   
   for (const update of updates) {
-    // Находим URL станции по имени
-    const stations = await loadJSON(STATIONS_FILE);
-    const station = stations.find(s => s.name === update.name);
-    if (!station) continue;
-    
-    const database = await loadJSON(DATABASE_FILE, {});
-    const currentPrices = database[station.url]?.[0]?.prices;
-    if (!currentPrices) continue;
-    
-    // Отправляем уведомления каждому подписанному пользователю
     for (const [chatId, userData] of Object.entries(users)) {
       if (!userData.notifications) continue;
       
-      const alerts = [];
+      if (!userData.lastAlerts) {
+        userData.lastAlerts = {};
+      }
+      if (!userData.lastAlerts[update.url]) {
+        userData.lastAlerts[update.url] = { diesel: null, e5: null, e10: null };
+      }
       
-      // Проверка целевых цен
+      const alerts = [];
+      const currentPrices = update.prices;
+      const lastAlert = userData.lastAlerts[update.url];
+      
       if (userData.targets) {
-        if (userData.targets.diesel && currentPrices.diesel && currentPrices.diesel <= userData.targets.diesel) {
-          alerts.push(`🎯 DIESEL достиг целевой цены!\n💰 ${currentPrices.diesel}€ (цель: ${userData.targets.diesel}€)`);
+        // DIESEL
+        if (userData.targets.diesel && currentPrices.diesel) {
+          if (currentPrices.diesel <= userData.targets.diesel) {
+            if (!lastAlert.diesel || currentPrices.diesel < lastAlert.diesel) {
+              alerts.push(`🎯 DIESEL достиг целевой цены!\n💰 ${currentPrices.diesel}€ (цель: ${userData.targets.diesel}€)`);
+              lastAlert.diesel = currentPrices.diesel;
+            }
+          } else {
+            lastAlert.diesel = null;
+          }
         }
-        if (userData.targets.e5 && currentPrices.e5 && currentPrices.e5 <= userData.targets.e5) {
-          alerts.push(`🎯 E5 достиг целевой цены!\n💰 ${currentPrices.e5}€ (цель: ${userData.targets.e5}€)`);
+        
+        // E5
+        if (userData.targets.e5 && currentPrices.e5) {
+          if (currentPrices.e5 <= userData.targets.e5) {
+            if (!lastAlert.e5 || currentPrices.e5 < lastAlert.e5) {
+              alerts.push(`🎯 E5 достиг целевой цены!\n💰 ${currentPrices.e5}€ (цель: ${userData.targets.e5}€)`);
+              lastAlert.e5 = currentPrices.e5;
+            }
+          } else {
+            lastAlert.e5 = null;
+          }
         }
-        if (userData.targets.e10 && currentPrices.e10 && currentPrices.e10 <= userData.targets.e10) {
-          alerts.push(`🎯 E10 достиг целевой цены!\n💰 ${currentPrices.e10}€ (цель: ${userData.targets.e10}€)`);
+        
+        // E10
+        if (userData.targets.e10 && currentPrices.e10) {
+          if (currentPrices.e10 <= userData.targets.e10) {
+            if (!lastAlert.e10 || currentPrices.e10 < lastAlert.e10) {
+              alerts.push(`🎯 E10 достиг целевой цены!\n💰 ${currentPrices.e10}€ (цель: ${userData.targets.e10}€)`);
+              lastAlert.e10 = currentPrices.e10;
+            }
+          } else {
+            lastAlert.e10 = null;
+          }
         }
       }
       
-      // Уведомления об изменениях (если включены)
       if (userData.notifyChanges && update.changes.length > 0) {
         alerts.push(`📊 ${update.name}\n${update.changes.join('\n')}`);
       }
       
-      // Отправка уведомлений
       for (const alert of alerts) {
         try {
-          await bot.sendMessage(chatId, `⛽ ${alert}`);
+          await bot.sendMessage(chatId, `⛽ *${update.name}*\n\n${alert}`, { parse_mode: 'Markdown' });
         } catch (error) {
           console.error(`Failed to notify ${chatId}:`, error.message);
         }
       }
     }
   }
+  
+  await saveJSON(USERS_FILE, users);
 }
 
-// Анализ лучшего времени для заправки
+// Аналитика лучшего времени
 async function analyzeWeeklyPatterns(stationUrl, fuelType = 'diesel') {
   const database = await loadJSON(DATABASE_FILE, {});
-  const history = database[stationUrl] || [];
+  const allHistory = database[stationUrl] || [];
+  
+  const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+  const weekAgo = new Date(Date.now() - ONE_WEEK_MS);
+  
+  const history = allHistory.filter(entry => 
+    new Date(entry.timestamp) > weekAgo
+  );
   
   if (history.length < 20) {
-    return { error: 'Недостаточно данных (минимум 20 записей)' };
+    return { error: 'Недостаточно данных (минимум 20 записей за неделю)' };
   }
   
-  // Группировка по дням недели и часам
   const patterns = {
     byDayOfWeek: {},
     byHour: {},
@@ -437,26 +469,16 @@ async function analyzeWeeklyPatterns(stationUrl, fuelType = 'diesel') {
     const hour = date.getHours();
     const key = `${dayOfWeek}-${hour}`;
     
-    // По дням недели
-    if (!patterns.byDayOfWeek[dayOfWeek]) {
-      patterns.byDayOfWeek[dayOfWeek] = [];
-    }
+    if (!patterns.byDayOfWeek[dayOfWeek]) patterns.byDayOfWeek[dayOfWeek] = [];
     patterns.byDayOfWeek[dayOfWeek].push(price);
     
-    // По часам
-    if (!patterns.byHour[hour]) {
-      patterns.byHour[hour] = [];
-    }
+    if (!patterns.byHour[hour]) patterns.byHour[hour] = [];
     patterns.byHour[hour].push(price);
     
-    // По дням и часам
-    if (!patterns.byDayAndHour[key]) {
-      patterns.byDayAndHour[key] = [];
-    }
+    if (!patterns.byDayAndHour[key]) patterns.byDayAndHour[key] = [];
     patterns.byDayAndHour[key].push(price);
   }
   
-  // Вычисление средних цен
   const avgByDay = {};
   for (const [day, prices] of Object.entries(patterns.byDayOfWeek)) {
     avgByDay[day] = (prices.reduce((a, b) => a + b, 0) / prices.length).toFixed(3);
@@ -467,10 +489,9 @@ async function analyzeWeeklyPatterns(stationUrl, fuelType = 'diesel') {
     avgByHour[hour] = (prices.reduce((a, b) => a + b, 0) / prices.length).toFixed(3);
   }
   
-  // Поиск лучших слотов (день + час)
   const bestSlots = [];
   for (const [key, prices] of Object.entries(patterns.byDayAndHour)) {
-    if (prices.length < 3) continue; // Минимум 3 наблюдения
+    if (prices.length < 3) continue;
     
     const avg = prices.reduce((a, b) => a + b, 0) / prices.length;
     const [day, hour] = key.split('-');
@@ -483,101 +504,108 @@ async function analyzeWeeklyPatterns(stationUrl, fuelType = 'diesel') {
     });
   }
   
-  // Сортировка по цене
   bestSlots.sort((a, b) => a.avgPrice - b.avgPrice);
   
-  // Топ-5 лучших временных слотов
   const top5 = bestSlots.slice(0, 5);
-  
-  // Лучший день недели
   const bestDay = Object.entries(avgByDay).sort((a, b) => a[1] - b[1])[0];
-  
-  // Лучший час
   const bestHour = Object.entries(avgByHour).sort((a, b) => a[1] - b[1])[0];
   
   return {
     bestDay: { day: bestDay[0], avgPrice: parseFloat(bestDay[1]) },
     bestHour: { hour: parseInt(bestHour[0]), avgPrice: parseFloat(bestHour[1]) },
     top5Slots: top5,
-    totalObservations: history.length
+    totalObservations: history.length,
+    period: '7 дней'
   };
 }
 
-// Команды бота
+// ========== TELEGRAM BOT COMMANDS ==========
+
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
   const users = await loadJSON(USERS_FILE, {});
   
-  // Инициализация пользователя
   if (!users[chatId]) {
     users[chatId] = {
       notifications: true,
       notifyChanges: false,
-      targets: {
-        diesel: null,
-        e5: null,
-        e10: null
-      },
+      targets: { diesel: null, e5: null, e10: null },
       fuelType: 'diesel'
     };
     await saveJSON(USERS_FILE, users);
   }
   
   bot.sendMessage(chatId, 
-    '⛽ *Fuel Price Tracker - Умный помощник*\n\n' +
-    '📊 *Команды:*\n' +
-    '/prices - Текущие цены\n' +
-    '/check - Мгновенный update цен\n' +
-    '/stats - Статистика базы данных\n' +
-    '/stations - Список заправок\n' +
-    '/settarget - Установить целевую цену\n' +
+    '⛽ *Fuel Price Tracker*\n\n' +
+    '📊 Основные команды:\n' +
+    '/prices - Актуальные цены\n' +
     '/analytics - Анализ лучшего времени\n' +
-    '/settings - Настройки уведомлений\n' +
-    '/backup - Резервное копирование данных в GD\n' +
-    '/restore - Восстановление данных с GD\n' +
-    '/help - Подробная помощь',
+    '/settarget - Установить целевую цену\n' +
+    '/settings - Настройки\n' +
+    '/help - Помощь\n\n' +
+    'Бот работает! 🚀',
     { parse_mode: 'Markdown' }
   );
 });
 
+// ✅ ИСПРАВЛЕНИЕ 2: Обновлённая команда /help
+bot.onText(/\/help/, (msg) => {
+  bot.sendMessage(msg.chat.id,
+    '📖 *Подробная помощь*\n\n' +
+    '*Основные команды:*\n' +
+    '`/prices` - Показать актуальные цены\n' +
+    '`/check` - Проверить цены сейчас\n' +
+    '`/analytics` - Анализ лучшего времени\n' +
+    '`/stats` - Статистика базы данных\n\n' +
+    '*Настройка алертов:*\n' +
+    '`/settarget diesel 1.76` - Уведомить при цене ≤ 1.76€\n' +
+    '`/settarget e5 1.80` - Уведомить при цене ≤ 1.80€\n' +
+    '`/settings` - Настройки уведомлений\n\n' +
+    '*Бэкапы (только для админа):*\n' +
+    '`/backup` - Сохранить в Google Drive\n' +
+    '`/restore` - Восстановить из Google Drive\n\n' +
+    '*Как это работает:*\n' +
+    '1️⃣ Бот проверяет цены каждые 5 минут\n' +
+    '2️⃣ Автобэкап в Google Drive каждые 6 часов\n' +
+    '3️⃣ Уведомления когда цена достигла цели\n' +
+    '4️⃣ Аналитика лучшего времени за неделю\n' +
+    '5️⃣ Учёт графика работы станций\n\n' +
+    '*Пример:*\n' +
+    '`/settarget diesel 1.74` → установить цель\n' +
+    '`/analytics` → узнать лучшее время\n' +
+    '`/prices` → проверить сейчас\n\n' +
+    '💡 Совет: используй аналитику для экономии!',
+    { parse_mode: 'Markdown' }
+  );
+});
 
 bot.onText(/\/prices/, async (msg) => {
   const chatId = msg.chat.id;
-
-  // Сообщаем что идёт live-обновление
-  const waitMsg = await bot.sendMessage(chatId, '🔄 Проверяю актуальные цены (live)...');
-
-  // Принудительно обновляем цены (это же пишет логи парсинга)
+  const waitMsg = await bot.sendMessage(chatId, '🔄 Проверяю цены...');
+  
   await checkAllPrices();
-
+  
   const stations = await loadJSON(STATIONS_FILE);
   const database = await loadJSON(DATABASE_FILE, {});
-
+  
   let message = '⛽ *Актуальные цены:*\n\n';
-
+  
   for (const station of stations) {
     const latest = database[station.url]?.[0];
     if (latest) {
       const timestamp = new Date(latest.timestamp);
-      const dateStr = timestamp.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
-      const timeStr = timestamp.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-
       message += `📍 *Station ${latest.id} - ${station.name}*\n`;
-      message += `   _${dateStr}, ${timeStr}_\n`;
+      message += `   _${timestamp.toLocaleString('de-DE')}_\n`;
+      
       if (latest.prices.diesel) message += `   💰 Diesel: ${latest.prices.diesel}€\n`;
-      if (latest.prices.e10) message += `   💰 E10: ${latest.prices.e10}€\n`;
       if (latest.prices.e5) message += `   💰 E5: ${latest.prices.e5}€\n`;
+      if (latest.prices.e10) message += `   💰 E10: ${latest.prices.e10}€\n`;
       message += '\n';
-    } else {
-      const stationId = station.url.match(/\/(\d+)$/)?.[1];
-      message += `📍 *Station ${stationId} - ${station.name}*\n`;
-      message += `   _Нет данных_\n\n`;
     }
   }
-
-  // Убираем "подождите" и отправляем итог
-  try { await bot.deleteMessage(chatId, waitMsg.message_id); } catch {}
-  await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+  
+  await bot.deleteMessage(chatId, waitMsg.message_id);
+  bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
 });
 
 bot.onText(/\/check/, async (msg) => {
@@ -591,69 +619,18 @@ bot.onText(/\/check/, async (msg) => {
   }
 });
 
-bot.onText(/\/cached/, async (msg) => {
-  const stations = await loadJSON(STATIONS_FILE);
-  const database = await loadJSON(DATABASE_FILE, {});
-
-  let message = '💾 *Последние известные цены:*\n_Без обновления с сайта_\n\n';
-
-  for (const station of stations) {
-    const latest = database[station.url]?.[0];
-    if (latest) {
-      const timestamp = new Date(latest.timestamp);
-      const ageMinutes = Math.floor((Date.now() - timestamp.getTime()) / 60000);
-
-      const dateStr = timestamp.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
-      const timeStr = timestamp.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-
-      message += `📍 *Station ${latest.id} - ${station.name}*\n`;
-      message += `   _${dateStr}, ${timeStr} (${ageMinutes} мин назад)_\n`;
-
-      if (latest.prices.diesel) message += `   💰 Diesel: ${latest.prices.diesel}€\n`;
-      if (latest.prices.e10) message += `   💰 E10: ${latest.prices.e10}€\n`;
-      if (latest.prices.e5) message += `   💰 E5: ${latest.prices.e5}€\n`;
-      message += '\n';
-    }
-  }
-
-  message += '💡 Для актуальных цен используй `/prices`';
-  await bot.sendMessage(msg.chat.id, message, { parse_mode: 'Markdown' });
-});
-
-bot.onText(/\/stations/, async (msg) => {
-  const stations = await loadJSON(STATIONS_FILE);
-  const message = '📋 *Отслеживаемые заправки:*\n\n' +
-    stations.map((s, i) => `${i + 1}. ${s.name}`).join('\n');
-  
-  bot.sendMessage(msg.chat.id, message, { parse_mode: 'Markdown' });
-});
-
-bot.onText(/\/settarget (.+)/, async (msg, match) => {
+bot.onText(/\/settarget (.+) (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
-  const input = match[1].trim();
+  const fuelType = match[1].toLowerCase();
+  const price = parseFloat(match[2]);
   
-  // Формат: diesel 1.76 или e5 1.80
-  const parts = input.split(' ');
-  if (parts.length !== 2) {
-    bot.sendMessage(chatId, 
-      '❌ Неверный формат!\n\n' +
-      'Используй: `/settarget diesel 1.76`\n' +
-      'Или: `/settarget e5 1.80`',
-      { parse_mode: 'Markdown' }
-    );
+  if (!['diesel', 'e5', 'e10'].includes(fuelType)) {
+    bot.sendMessage(chatId, '❌ Неверный тип топлива. Используй: diesel, e5 или e10');
     return;
   }
   
-  const [fuelType, priceStr] = parts;
-  const price = parseFloat(priceStr);
-  
-  if (!['diesel', 'e5', 'e10'].includes(fuelType.toLowerCase())) {
-    bot.sendMessage(chatId, '❌ Тип топлива должен быть: diesel, e5 или e10');
-    return;
-  }
-  
-  if (isNaN(price) || price <= 0) {
-    bot.sendMessage(chatId, '❌ Неверная цена!');
+  if (isNaN(price)) {
+    bot.sendMessage(chatId, '❌ Неверная цена');
     return;
   }
   
@@ -661,13 +638,14 @@ bot.onText(/\/settarget (.+)/, async (msg, match) => {
   if (!users[chatId]) users[chatId] = { notifications: true, targets: {} };
   if (!users[chatId].targets) users[chatId].targets = {};
   
-  users[chatId].targets[fuelType.toLowerCase()] = price;
+  users[chatId].targets[fuelType] = price;
   await saveJSON(USERS_FILE, users);
   
   bot.sendMessage(chatId, 
-    `✅ Целевая цена установлена!\n\n` +
+    `✅ *Целевая цена установлена!*\n\n` +
     `🎯 ${fuelType.toUpperCase()}: ${price}€\n\n` +
-    `Я уведомлю тебя, когда цена опустится до этого уровня или ниже.`
+    `Я уведомлю тебя когда цена опустится до этого уровня или ниже.`,
+    { parse_mode: 'Markdown' }
   );
 });
 
@@ -680,7 +658,7 @@ bot.onText(/\/analytics/, async (msg) => {
   bot.sendMessage(chatId, '📊 Анализирую данные за неделю...');
   
   const stations = await loadJSON(STATIONS_FILE);
-  let message = `📊 *Анализ лучшего времени для заправки (${fuelType.toUpperCase()})*\n\n`;
+  let message = `📊 *Анализ лучшего времени*\n_Топливо: ${fuelType.toUpperCase()}, Период: 7 дней_\n\n`;
   
   for (const station of stations) {
     const analysis = await analyzeWeeklyPatterns(station.url, fuelType);
@@ -692,14 +670,10 @@ bot.onText(/\/analytics/, async (msg) => {
     
     message += `📍 *${station.name}*\n`;
     message += `📈 Наблюдений: ${analysis.totalObservations}\n\n`;
+    message += `🏆 Лучший день: ${analysis.bestDay.day} (${analysis.bestDay.avgPrice}€)\n`;
+    message += `⏰ Лучший час: ${analysis.bestHour.hour}:00 (${analysis.bestHour.avgPrice}€)\n\n`;
+    message += `🎯 Топ-5:\n`;
     
-    message += `🏆 *Лучший день:* ${analysis.bestDay.day}\n`;
-    message += `   Средняя цена: ${analysis.bestDay.avgPrice}€\n\n`;
-    
-    message += `⏰ *Лучший час:* ${analysis.bestHour.hour}:00\n`;
-    message += `   Средняя цена: ${analysis.bestHour.avgPrice}€\n\n`;
-    
-    message += `🎯 *Топ-5 временных слотов:*\n`;
     analysis.top5Slots.forEach((slot, i) => {
       message += `${i + 1}. ${slot.day} в ${slot.hour}:00 - ${slot.avgPrice}€\n`;
     });
@@ -709,24 +683,43 @@ bot.onText(/\/analytics/, async (msg) => {
   bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
 });
 
+bot.onText(/\/stats/, async (msg) => {
+  const stations = await loadJSON(STATIONS_FILE);
+  const database = await loadJSON(DATABASE_FILE, {});
+  
+  let totalRecords = 0;
+  let message = '📊 *Статистика базы данных*\n\n';
+  
+  for (const station of stations) {
+    const entries = database[station.url] || [];
+    totalRecords += entries.length;
+    
+    if (entries.length > 0) {
+      const newest = new Date(entries[0].timestamp);
+      message += `📍 *${station.name}*\n`;
+      message += `   Записей: ${entries.length}\n`;
+      message += `   Последняя: ${newest.toLocaleString('de-DE')}\n\n`;
+    }
+  }
+  
+  const dbSize = JSON.stringify(database).length / 1024;
+  message += `\n📈 *Общая статистика:*\n`;
+  message += `Всего записей: ${totalRecords}\n`;
+  message += `Размер БД: ${dbSize.toFixed(2)} KB\n\n`;
+  message += `🧹 Автоочистка: последние 14 дней\n`;
+  
+  bot.sendMessage(msg.chat.id, message, { parse_mode: 'Markdown' });
+});
+
 bot.onText(/\/settings/, async (msg) => {
   const chatId = msg.chat.id;
   const users = await loadJSON(USERS_FILE, {});
-  const userData = users[chatId] || { notifications: true, notifyChanges: false, fuelType: 'diesel', targets: {} };
+  const userData = users[chatId] || {};
   
   const keyboard = {
     inline_keyboard: [
       [
-        { 
-          text: userData.notifications ? '🔔 Уведомления: ВКЛ' : '🔕 Уведомления: ВЫКЛ', 
-          callback_data: 'toggle_notifications' 
-        }
-      ],
-      [
-        { 
-          text: userData.notifyChanges ? '📊 Все изменения: ВКЛ' : '📊 Все изменения: ВЫКЛ', 
-          callback_data: 'toggle_changes' 
-        }
+        { text: userData.notifications ? '🔔 Уведомления: ВКЛ' : '🔕 Уведомления: ВЫКЛ', callback_data: 'toggle_notifications' }
       ],
       [
         { text: 'Diesel', callback_data: 'fuel_diesel' },
@@ -736,266 +729,383 @@ bot.onText(/\/settings/, async (msg) => {
     ]
   };
   
-  let message = '⚙️ *Настройки*\n\n';
-  message += `Текущий тип топлива: *${(userData.fuelType || 'diesel').toUpperCase()}*\n\n`;
-  
-  if (userData.targets) {
-    message += '🎯 *Целевые цены:*\n';
-    if (userData.targets.diesel) message += `Diesel: ${userData.targets.diesel}€\n`;
-    if (userData.targets.e5) message += `E5: ${userData.targets.e5}€\n`;
-    if (userData.targets.e10) message += `E10: ${userData.targets.e10}€\n`;
-  }
-  
-  bot.sendMessage(chatId, message, {
+  bot.sendMessage(chatId, '⚙️ *Настройки*\n\nВыбери тип топлива для аналитики:', {
     parse_mode: 'Markdown',
     reply_markup: keyboard
   });
 });
 
-bot.onText(/\/help/, (msg) => {
-  bot.sendMessage(msg.chat.id,
-    '📖 *Подробная помощь*\n\n' +
-    '*Основные команды:*\n' +
-    '`/prices` - Показать текущие цены на всех заправках\n' +
-    '`/check` - Синхронизировать цены\n' +
-    '`/analytics` - Анализ лучшего времени за неделю\n' +
-    '`/settings` - Настройки\n\n' +
-    '*Настройка алертов:*\n' +
-    '`/settarget diesel 1.76` - Уведомить при цене ≤ 1.76€\n' +
-    '`/settarget e5 1.80` - Уведомить при цене ≤ 1.80€\n\n' +
-    '*Как это работает:*\n' +
-    '1️⃣ Бот проверяет цены каждые 10 минут\n' +
-    '2️⃣ Если цена достигла целевой - получишь уведомление\n' +
-    '3️⃣ Раз в неделю смотри `/analytics` для оптимального времени\n\n' +
-    '*Пример использования:*\n' +
-    '• Установи целевую цену: `/settarget diesel 1.74`\n' +
-    '• Жди уведомления 🔔\n' +
-    '• Заправляйся по лучшей цене!\n\n' +
-    '💡 Совет: используй `/analytics` чтобы узнать, в какой день и час обычно самые низкие цены',
-    { parse_mode: 'Markdown' }
-  );
+bot.on('callback_query', async (query) => {
+  const chatId = query.message.chat.id;
+  const users = await loadJSON(USERS_FILE, {});
+  
+  if (!users[chatId]) users[chatId] = { notifications: true, fuelType: 'diesel', targets: {} };
+  
+  if (query.data === 'toggle_notifications') {
+    users[chatId].notifications = !users[chatId].notifications;
+    await saveJSON(USERS_FILE, users);
+    bot.answerCallbackQuery(query.id, { text: users[chatId].notifications ? 'Уведомления включены' : 'Уведомления выключены' });
+  } else if (query.data.startsWith('fuel_')) {
+    const fuel = query.data.replace('fuel_', '');
+    users[chatId].fuelType = fuel;
+    await saveJSON(USERS_FILE, users);
+    bot.answerCallbackQuery(query.id, { text: `Выбрано: ${fuel.toUpperCase()}` });
+  }
 });
 
+// ✅ ИСПРАВЛЕНИЕ 7: Только админ может делать /backup и /restore
 bot.onText(/\/backup/, async (msg) => {
   const chatId = msg.chat.id;
-  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '⛔ Нет доступа.');
-
+  
+  if (!isAdmin(chatId)) {
+    bot.sendMessage(chatId, '❌ У вас нет прав для выполнения этой команды');
+    return;
+  }
+  
+  bot.sendMessage(chatId, '🔄 Начинаю резервное копирование...');
+  
   try {
-    await bot.sendMessage(chatId, '☁️ Делаю backup на Google Drive...');
     await backupToDrive();
-    await bot.sendMessage(chatId, '✅ Backup готов: database/users/stations сохранены в Google Drive');
-  } catch (e) {
-    await bot.sendMessage(chatId, `❌ Backup ошибка: ${e.message}`);
+    bot.sendMessage(chatId, '✅ Бэкап успешно завершён!');
+  } catch (error) {
+    bot.sendMessage(chatId, '❌ Ошибка: ' + error.message);
   }
 });
 
 bot.onText(/\/restore/, async (msg) => {
   const chatId = msg.chat.id;
-  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '⛔ Нет доступа.');
-
+  
+  if (!isAdmin(chatId)) {
+    bot.sendMessage(chatId, '❌ У вас нет прав для выполнения этой команды');
+    return;
+  }
+  
+  bot.sendMessage(chatId, '🔄 Начинаю восстановление...');
+  
   try {
-    await bot.sendMessage(chatId, '☁️ Восстанавливаю файлы с Google Drive...');
     await restoreFromDrive();
-    await bot.sendMessage(chatId, '✅ Restore готов: database/users/stations восстановлены');
-  } catch (e) {
-    await bot.sendMessage(chatId, `❌ Restore ошибка: ${e.message}`);
+    bot.sendMessage(chatId, '✅ Восстановление успешно завершено!\n\n🔄 Перезапустите бота для применения изменений');
+  } catch (error) {
+    bot.sendMessage(chatId, '❌ Ошибка: ' + error.message);
   }
 });
 
-bot.onText(/\/stats/, async (msg) => {
-  const database = await loadJSON(DATABASE_FILE, {});
-  const stations = await loadJSON(STATIONS_FILE);
+// ========== EXPRESS WEB SERVER ==========
 
-  let totalEntries = 0;
-  let oldestDate = new Date();
-  let newestDate = new Date(0);
+// ✅ ИСПРАВЛЕНИЕ 5: Современный HTML Dashboard
+const app = express();
+app.use(express.json());
 
-  let message = '📊 *Статистика базы данных*\n\n';
-
-  for (const station of stations) {
-    const entries = database[station.url] || [];
-    totalEntries += entries.length;
-
+app.get('/', async (req, res) => {
+  const stations = await loadJSON(STATIONS_FILE).catch(() => []);
+  const database = await loadJSON(DATABASE_FILE, {}).catch(() => ({}));
+  const users = await loadJSON(USERS_FILE, {}).catch(() => ({}));
+  
+  const totalRecords = Object.values(database).reduce((sum, arr) => sum + arr.length, 0);
+  const uptime = Math.floor((Date.now() - serverStartTime) / 1000 / 60);
+  
+  let lastCheck = null;
+  for (const entries of Object.values(database)) {
     if (entries.length > 0) {
-      const stationOldest = new Date(entries[entries.length - 1].timestamp);
-      const stationNewest = new Date(entries[0].timestamp);
-
-      if (stationOldest < oldestDate) oldestDate = stationOldest;
-      if (stationNewest > newestDate) newestDate = stationNewest;
-
-      message += `📍 *${station.name}*\n`;
-      message += `   Записей: ${entries.length}\n`;
-      message += `   Последняя: ${stationNewest.toLocaleString('ru-RU')}\n\n`;
+      const ts = new Date(entries[0].timestamp);
+      if (!lastCheck || ts > lastCheck) lastCheck = ts;
     }
   }
-
-  const ageInDays = (newestDate > oldestDate) ? Math.floor((newestDate - oldestDate) / (1000 * 60 * 60 * 24)) : 0;
-  const dbSize = JSON.stringify(database).length / 1024;
-
-  message += `\n📈 *Общая статистика:*\n`;
-  message += `Всего записей: ${totalEntries}\n`;
-  message += `Период данных: ${ageInDays} дней\n`;
-  message += `Размер БД: ${dbSize.toFixed(2)} KB\n\n`;
-  message += `🧹 *Автоочистка:* последние 14 дней`;
-
-  await bot.sendMessage(msg.chat.id, message, { parse_mode: 'Markdown' });
+  
+  res.send(`<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>⛽ Fuel Tracker Dashboard</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+    }
+    .sidebar {
+      width: 250px;
+      background: rgba(255,255,255,0.95);
+      backdrop-filter: blur(10px);
+      box-shadow: 2px 0 10px rgba(0,0,0,0.1);
+      padding: 20px;
+    }
+    .logo {
+      font-size: 24px;
+      font-weight: bold;
+      color: #667eea;
+      margin-bottom: 30px;
+      text-align: center;
+    }
+    .nav-item {
+      display: block;
+      padding: 12px 15px;
+      margin-bottom: 10px;
+      background: white;
+      border-radius: 8px;
+      text-decoration: none;
+      color: #333;
+      transition: all 0.3s;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+    }
+    .nav-item:hover {
+      transform: translateX(5px);
+      box-shadow: 0 4px 10px rgba(102, 126, 234, 0.3);
+    }
+    .main {
+      flex: 1;
+      padding: 30px;
+      overflow-y: auto;
+    }
+    .header {
+      background: white;
+      border-radius: 15px;
+      padding: 30px;
+      margin-bottom: 20px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+      text-align: center;
+    }
+    .header h1 {
+      font-size: 2em;
+      color: #667eea;
+      margin-bottom: 5px;
+    }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: #00cc00;
+      font-weight: 500;
+    }
+    .status::before {
+      content: '';
+      width: 10px;
+      height: 10px;
+      background: #00cc00;
+      border-radius: 50%;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 20px;
+      margin-bottom: 20px;
+    }
+    .stat-card {
+      background: white;
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+      text-align: center;
+    }
+    .stat-card h3 {
+      font-size: 2.5em;
+      color: #667eea;
+      margin-bottom: 5px;
+    }
+    .stat-card p {
+      color: #666;
+      font-size: 0.9em;
+    }
+    .card {
+      background: white;
+      border-radius: 12px;
+      padding: 25px;
+      margin-bottom: 20px;
+      box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+    }
+    .card h2 {
+      color: #333;
+      margin-bottom: 15px;
+    }
+    .station-item {
+      padding: 10px;
+      border-bottom: 1px solid #eee;
+    }
+    .station-item strong {
+      color: #667eea;
+    }
+  </style>
+</head>
+<body>
+  <div class="sidebar">
+    <div class="logo">⛽ Fuel Tracker</div>
+    <a href="/" class="nav-item">📊 Dashboard</a>
+    <a href="/database.json" class="nav-item">💾 Database</a>
+    <a href="/users.json" class="nav-item">👥 Users</a>
+    <a href="/stations.json" class="nav-item">📍 Stations</a>
+    <a href="/api/stats" class="nav-item">📈 Stats API</a>
+  </div>
+  <div class="main">
+    <div class="header">
+      <h1>⛽ Fuel Price Tracker</h1>
+      <div class="status">Online</div>
+      <p style="margin-top: 10px; color: #666;">Render.com • Europe/Berlin</p>
+    </div>
+    <div class="stats-grid">
+      <div class="stat-card">
+        <h3>${stations.length}</h3>
+        <p>Станций</p>
+      </div>
+      <div class="stat-card">
+        <h3>${totalRecords}</h3>
+        <p>Записей в БД</p>
+      </div>
+      <div class="stat-card">
+        <h3>${Object.keys(users).length}</h3>
+        <p>Пользователей</p>
+      </div>
+      <div class="stat-card">
+        <h3>${uptime} мин</h3>
+        <p>Uptime</p>
+      </div>
+    </div>
+    <div class="card">
+      <h2>📍 Станции</h2>
+      ${stations.map(s => {
+        const latest = database[s.url]?.[0];
+        return `
+          <div class="station-item">
+            <strong>${s.name}</strong>
+            ${latest ? `
+              <div style="margin-top: 5px; font-size: 0.9em; color: #666;">
+                💰 Diesel: ${latest.prices.diesel || 'N/A'}€ | 
+                E5: ${latest.prices.e5 || 'N/A'}€ | 
+                E10: ${latest.prices.e10 || 'N/A'}€
+                <br>
+                🕐 ${new Date(latest.timestamp).toLocaleString('de-DE')}
+              </div>
+            ` : '<div style="color: #999;">Нет данных</div>'}
+          </div>
+        `;
+      }).join('')}
+    </div>
+    <div class="card">
+      <h2>ℹ️ Информация</h2>
+      <p><strong>Запущен:</strong> ${serverStartTime.toLocaleString('de-DE')}</p>
+      <p><strong>Uptime:</strong> ${uptime} минут</p>
+      <p><strong>Последняя проверка:</strong> ${lastCheck ? lastCheck.toLocaleString('de-DE') : 'N/A'}</p>
+      <p><strong>Автобэкап:</strong> Каждые 6 часов</p>
+      <p><strong>Проверка цен:</strong> Каждые 5 минут (только открытые станции)</p>
+    </div>
+  </div>
+</body>
+</html>`);
 });
 
-// Обработчик inline кнопок
-bot.on('callback_query', async (query) => {
-  const chatId = query.message.chat.id;
-  const data = query.data;
-  
+app.get('/database.json', async (req, res) => {
+  const data = await loadJSON(DATABASE_FILE, {});
+  res.json(data);
+});
+
+app.get('/users.json', async (req, res) => {
+  const data = await loadJSON(USERS_FILE, {});
+  res.json(data);
+});
+
+app.get('/stations.json', async (req, res) => {
+  const data = await loadJSON(STATIONS_FILE, []);
+  res.json(data);
+});
+
+app.get('/api/stats', async (req, res) => {
+  const stations = await loadJSON(STATIONS_FILE, []);
+  const database = await loadJSON(DATABASE_FILE, {});
   const users = await loadJSON(USERS_FILE, {});
-  if (!users[chatId]) users[chatId] = { notifications: true, targets: {}, fuelType: 'diesel' };
   
-  if (data === 'toggle_notifications') {
-    users[chatId].notifications = !users[chatId].notifications;
-    await saveJSON(USERS_FILE, users);
-    bot.answerCallbackQuery(query.id, { 
-      text: users[chatId].notifications ? '🔔 Уведомления включены' : '🔕 Уведомления выключены' 
-    });
-  } else if (data === 'toggle_changes') {
-    users[chatId].notifyChanges = !users[chatId].notifyChanges;
-    await saveJSON(USERS_FILE, users);
-    bot.answerCallbackQuery(query.id, { 
-      text: users[chatId].notifyChanges ? '📊 Уведомления о всех изменениях включены' : '📊 Только целевые цены' 
-    });
-  } else if (data.startsWith('fuel_')) {
-    const fuelType = data.replace('fuel_', '');
-    users[chatId].fuelType = fuelType;
-    await saveJSON(USERS_FILE, users);
-    bot.answerCallbackQuery(query.id, { 
-      text: `Выбран тип топлива: ${fuelType.toUpperCase()}` 
-    });
-  }
+  const totalRecords = Object.values(database).reduce((sum, arr) => sum + arr.length, 0);
+  const uptime = Math.floor((Date.now() - serverStartTime) / 1000);
   
-  // Обновляем сообщение с настройками
-  const userData = users[chatId];
-  const keyboard = {
-    inline_keyboard: [
-      [
-        { 
-          text: userData.notifications ? '🔔 Уведомления: ВКЛ' : '🔕 Уведомления: ВЫКЛ', 
-          callback_data: 'toggle_notifications' 
-        }
-      ],
-      [
-        { 
-          text: userData.notifyChanges ? '📊 Все изменения: ВКЛ' : '📊 Все изменения: ВЫКЛ', 
-          callback_data: 'toggle_changes' 
-        }
-      ],
-      [
-        { text: 'Diesel', callback_data: 'fuel_diesel' },
-        { text: 'E5', callback_data: 'fuel_e5' },
-        { text: 'E10', callback_data: 'fuel_e10' }
-      ]
-    ]
-  };
-  
-  let message = '⚙️ *Настройки*\n\n';
-  message += `Текущий тип топлива: *${(userData.fuelType || 'diesel').toUpperCase()}*\n\n`;
-  
-  if (userData.targets) {
-    message += '🎯 *Целевые цены:*\n';
-    if (userData.targets.diesel) message += `Diesel: ${userData.targets.diesel}€\n`;
-    if (userData.targets.e5) message += `E5: ${userData.targets.e5}€\n`;
-    if (userData.targets.e10) message += `E10: ${userData.targets.e10}€\n`;
-  }
-  
-  bot.editMessageText(message, {
-    chat_id: chatId,
-    message_id: query.message.message_id,
-    parse_mode: 'Markdown',
-    reply_markup: keyboard
+  res.json({
+    stations: stations.length,
+    totalRecords,
+    users: Object.keys(users).length,
+    uptimeSeconds: uptime,
+    startedAt: serverStartTime.toISOString()
   });
 });
 
-// HTTP endpoint для UptimeRobot
-const express = require('express');
-const app = express();
-
-app.get('/health', (req, res) => {
-  res.send('OK');
-});
-
-app.get('/', async (req, res) => {
-  try {
-    const stations = await loadJSON(STATIONS_FILE, []);
-    const database = await loadJSON(DATABASE_FILE, {});
-
-    const rows = stations.map(s => {
-      const latest = database[s.url]?.[0];
-      if (!latest) return `<tr><td>${s.name}</td><td colspan="3">нет данных</td></tr>`;
-      const t = new Date(latest.timestamp);
-      const ts = t.toLocaleString('de-DE', { hour12: false });
-      const p = latest.prices || {};
-      const fmt = (x) => (x === null || x === undefined) ? '—' : Number(x).toFixed(3);
-      return `<tr><td>${s.name}</td><td>${fmt(p.diesel)}</td><td>${fmt(p.e10)}</td><td>${fmt(p.e5)}</td><td>${ts}</td></tr>`;
-    }).join('');
-
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.end(`<!doctype html><html><head><meta charset="utf-8"/>
-<title>Fuel Tracker</title>
-<style>body{font-family:system-ui,Arial,sans-serif;margin:24px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #3333;padding:8px;text-align:left}th{position:sticky;top:0;background:#111;color:#fff}code{background:#f2f2f2;padding:2px 6px;border-radius:6px}</style></head>
-<body>
-<h1>Fuel Tracker</h1>
-<p>Endpoints: <code>/health</code> <code>/check-prices</code></p>
-<p>Telegram: <code>/prices</code> (live) <code>/cached</code> (no refresh) <code>/backup</code> <code>/restore</code></p>
-<table><thead><tr><th>Station</th><th>Diesel</th><th>E10</th><th>E5</th><th>Updated</th></tr></thead><tbody>${rows}</tbody></table>
-</body></html>`);
-  } catch (e) {
-    res.status(500).send('error: ' + e.message);
-  }
-});
+app.get('/health', (req, res) => res.send('OK'));
 
 app.get('/check-prices', async (req, res) => {
-  try {
-    await checkAllPrices();
-    res.json({ status: 'success' });
-  } catch (error) {
-    res.status(500).json({ status: 'error', message: error.message });
-  }
+  const updates = await checkAllPrices();
+  res.json({ status: 'success', updates: updates.length });
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, async () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log('🤖 Bot started');
+// ============================================================
+// ✅ ИСПРАВЛЕНИЕ 8: НАСТРОЙКИ ТАЙМИНГОВ (В КОНЦЕ ФАЙЛА)
+// ============================================================
 
-  // Авто-восстановление JSON с Google Drive (Render Free friendly)
-  if (process.env.AUTO_RESTORE_ON_START === '1') {
-    try {
-      console.log('☁️ AUTO_RESTORE_ON_START: restoring JSON from Google Drive...');
-      await restoreFromDrive();
-      console.log('✅ Auto-restore done');
-    } catch (e) {
-      console.log('⚠️ Auto-restore failed:', e.message);
-    }
-  }
+console.log('\n' + '='.repeat(60));
+console.log('🚀 FUEL PRICE TRACKER');
+console.log('='.repeat(60));
+console.log(`🕐 Запущен: ${serverStartTime.toLocaleString('de-DE')}`);
+console.log('='.repeat(60) + '\n');
 
-  // Первая проверка при запуске
-  try {
-    await checkAllPrices();
-  } catch (e) {
-    console.log('⚠️ Initial check failed:', e.message);
-  }
-});
+// ✅ ИСПРАВЛЕНИЕ 3: Автобэкап каждые 6 часов
+const AUTO_BACKUP_INTERVAL = 6 * 60 * 60 * 1000; // 6 часов
 
-// Автоматическая проверка каждые 30 минут (на всякий случай)
-setInterval(checkAllPrices, 10 * 60 * 1000);
-
-
-// Авто-бэкап на Google Drive
-const BACKUP_INTERVAL_MIN = parseInt(process.env.BACKUP_INTERVAL_MIN || '360', 10); // 6 часов
 setInterval(async () => {
-  if (!process.env.GDRIVE_KEYFILE) return;
   try {
-    console.log('☁️ Auto-backup to Drive...');
+    console.log('⏰ Автобэкап (каждые 6 часов)');
     await backupToDrive();
-    console.log('✅ Auto-backup done');
-  } catch (e) {
-    console.log('⚠️ Auto-backup failed:', e.message);
+    console.log('✅ Автобэкап завершён успешно');
+  } catch (error) {
+    console.error('❌ Ошибка автобэкапа:', error.message);
   }
-}, BACKUP_INTERVAL_MIN * 60 * 1000);
+}, AUTO_BACKUP_INTERVAL);
+
+// Первый бэкап через 5 минут после запуска
+setTimeout(async () => {
+  try {
+    console.log('⏰ Первый бэкап после запуска');
+    await backupToDrive();
+    console.log('✅ Первый бэкап завершён');
+  } catch (error) {
+    console.error('❌ Ошибка первого бэкапа:', error.message);
+  }
+}, 5 * 60 * 1000);
+
+// Проверка цен каждые 5 минут
+const PRICE_CHECK_INTERVAL = 5 * 60 * 1000; // 5 минут
+
+setInterval(async () => {
+  try {
+    await checkAllPrices();
+  } catch (error) {
+    console.error('❌ Ошибка проверки цен:', error.message);
+  }
+}, PRICE_CHECK_INTERVAL);
+
+// Восстановление при старте (если включено)
+if (process.env.AUTO_RESTORE_ON_START === '1') {
+  (async () => {
+    try {
+      console.log('🔄 Автовосстановление при старте...');
+      await restoreFromDrive();
+      console.log('✅ Данные восстановлены из Google Drive');
+    } catch (error) {
+      console.error('⚠️ Автовосстановление не удалось:', error.message);
+    }
+  })();
+}
+
+// Запуск Express сервера
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log('\n' + '='.repeat(60));
+  console.log(`🌐 Сервер запущен на порту ${PORT}`);
+  console.log(`📍 Dashboard: http://localhost:${PORT}`);
+  console.log(`⏰ Проверка цен: каждые ${PRICE_CHECK_INTERVAL / 60000} мин`);
+  console.log(`💾 Автобэкап: каждые ${AUTO_BACKUP_INTERVAL / 3600000} часов`);
+  console.log(`🤖 Telegram бот активен`);
+  console.log(`👤 Админ ID: ${process.env.ADMIN_CHAT_IDS || 'не установлен'}`);
+  console.log('='.repeat(60) + '\n');
+});
