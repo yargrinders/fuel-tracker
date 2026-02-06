@@ -12,6 +12,7 @@ const express = require('express');
 const PRICE_CHECK_INTERVAL = 5 * 60 * 1000; // 5 минут
 const AUTO_BACKUP_INTERVAL = 6 * 60 * 60 * 1000; // 6 часов
 
+
 // Установка timezone для Германии
 process.env.TZ = 'Europe/Berlin';
 
@@ -210,7 +211,34 @@ async function fetchStationPrices(url) {
 
     console.log(`\n🔍 Парсинг станции ${stationId} - ${stationName}`);
 
-    $('.price-field').each((i, priceField) => {
+    // ✅ НОВОЕ: самый надёжный парсинг — напрямую по ID current-price-N / suffix-price-N
+    // На clever-tanken обычно:
+    // 1 = Diesel, 2 = E10, 3 = E5 (как в твоём примере)
+    const directMap = [
+      { n: 1, key: 'diesel' },
+      { n: 2, key: 'e10' },
+      { n: 3, key: 'e5' }
+    ];
+
+    for (const m of directMap) {
+      const baseText = $(`#current-price-${m.n}`).first().text().trim();
+      const suffixText = $(`#suffix-price-${m.n}`).first().text().trim();
+      const price = fullPrice(baseText, suffixText);
+
+      if (!isNaN(price) && price > 0 && price < 3) {
+        prices[m.key] = price;
+      }
+    }
+
+    const gotAllById = prices.diesel && prices.e10 && prices.e5;
+
+    if (gotAllById) {
+      console.log(`  ✓ Diesel: ${prices.diesel}€ (по ID)`);
+      console.log(`  ✓ E10: ${prices.e10}€ (по ID)`);
+      console.log(`  ✓ E5: ${prices.e5}€ (по ID)`);
+    } else {
+
+      $('.price-field').each((i, priceField) => {
       const fieldHtml = $(priceField).html();
       const fieldText = $(priceField).text().toLowerCase();
       
@@ -250,6 +278,8 @@ async function fetchStationPrices(url) {
         }
       }
     });
+
+    }
 
     if (!prices.diesel || !prices.e5 || !prices.e10) {
       $('span[id^="current-price-"]').each((i, span) => {
@@ -314,6 +344,8 @@ async function checkAllPrices() {
     const current = await fetchStationPrices(station.url);
     
     if (!current || !current.prices) continue;
+    // Используем имя из stations.json (чтобы не показывать номер станции)
+    current.name = station.name || current.name;
     
     const lastEntry = database[station.url]?.[0];
     
@@ -426,7 +458,7 @@ async function notifyUsers(updates) {
       }
       
       if (userData.notifyChanges && update.changes.length > 0) {
-        alerts.push(`📊 ${update.name}\n${update.changes.join('\n')}`);
+        alerts.push(`📊 Изменение цены:\n${update.changes.join('\n')}`);
       }
       
       for (const alert of alerts) {
@@ -598,7 +630,7 @@ bot.onText(/\/prices/, async (msg) => {
     const latest = database[station.url]?.[0];
     if (latest) {
       const timestamp = new Date(latest.timestamp);
-      message += `📍 *Station ${latest.id} - ${station.name}*\n`;
+      message += `📍 *${station.name}*\n`;
       message += `   _${timestamp.toLocaleString('de-DE')}_\n`;
       
       if (latest.prices.diesel) message += `   💰 Diesel: ${latest.prices.diesel}€\n`;
@@ -715,15 +747,24 @@ bot.onText(/\/stats/, async (msg) => {
   bot.sendMessage(msg.chat.id, message, { parse_mode: 'Markdown' });
 });
 
-bot.onText(/\/settings/, async (msg) => {
-  const chatId = msg.chat.id;
-  const users = await loadJSON(USERS_FILE, {});
-  const userData = users[chatId] || {};
-  
-  const keyboard = {
+
+function buildTargetsText(userData) {
+  const t = (userData && userData.targets) ? userData.targets : {};
+  const lines = [];
+  if (t.e5 != null) lines.push(`E5: ${Number(t.e5).toFixed(3)}€`);
+  if (t.e10 != null) lines.push(`E10: ${Number(t.e10).toFixed(3)}€`);
+  if (t.diesel != null) lines.push(`Diesel: ${Number(t.diesel).toFixed(3)}€`);
+  return lines.length ? lines.join('\n') : 'не заданы';
+}
+
+function buildSettingsKeyboard(userData) {
+  return {
     inline_keyboard: [
       [
         { text: userData.notifications ? '🔔 Уведомления: ВКЛ' : '🔕 Уведомления: ВЫКЛ', callback_data: 'toggle_notifications' }
+      ],
+      [
+        { text: userData.notifyChanges ? '📊 Все изменения: ВКЛ' : '📊 Все изменения: ВЫКЛ', callback_data: 'toggle_changes' }
       ],
       [
         { text: 'Diesel', callback_data: 'fuel_diesel' },
@@ -732,8 +773,36 @@ bot.onText(/\/settings/, async (msg) => {
       ]
     ]
   };
-  
-  bot.sendMessage(chatId, '⚙️ *Настройки*\n\nВыбери тип топлива для аналитики:', {
+}
+
+function buildSettingsText(userData) {
+  const fuel = (userData.fuelType || 'diesel').toUpperCase();
+  const targetsText = buildTargetsText(userData);
+  return (
+    '⚙️ *Настройки*\n\n' +
+    `Текущий тип топлива: *${fuel}*\n\n` +
+    `🎯 *Целевые цены:*\n${targetsText}\n\n` +
+    'Выбери тип топлива для аналитики:'
+  );
+}
+
+bot.onText(/\/settings/, async (msg) => {
+  const chatId = msg.chat.id;
+  const users = await loadJSON(USERS_FILE, {});
+  const userData = users[chatId] || {};
+
+  // дефолты
+  if (userData.notifications === undefined) userData.notifications = true;
+  if (userData.notifyChanges === undefined) userData.notifyChanges = false;
+  if (!userData.targets) userData.targets = { diesel: null, e5: null, e10: null };
+  if (!userData.fuelType) userData.fuelType = 'diesel';
+
+  users[chatId] = userData;
+  await saveJSON(USERS_FILE, users);
+
+  const keyboard = buildSettingsKeyboard(userData);
+
+  bot.sendMessage(chatId, buildSettingsText(userData), {
     parse_mode: 'Markdown',
     reply_markup: keyboard
   });
@@ -741,19 +810,49 @@ bot.onText(/\/settings/, async (msg) => {
 
 bot.on('callback_query', async (query) => {
   const chatId = query.message.chat.id;
+  const messageId = query.message.message_id;
   const users = await loadJSON(USERS_FILE, {});
-  
-  if (!users[chatId]) users[chatId] = { notifications: true, fuelType: 'diesel', targets: {} };
-  
+
+  if (!users[chatId]) {
+    users[chatId] = {
+      notifications: true,
+      notifyChanges: false,
+      fuelType: 'diesel',
+      targets: { diesel: null, e5: null, e10: null }
+    };
+  }
+
+  const userData = users[chatId];
+  if (userData.notifications === undefined) userData.notifications = true;
+  if (userData.notifyChanges === undefined) userData.notifyChanges = false;
+  if (!userData.targets) userData.targets = { diesel: null, e5: null, e10: null };
+  if (!userData.fuelType) userData.fuelType = 'diesel';
+
   if (query.data === 'toggle_notifications') {
-    users[chatId].notifications = !users[chatId].notifications;
+    userData.notifications = !userData.notifications;
     await saveJSON(USERS_FILE, users);
-    bot.answerCallbackQuery(query.id, { text: users[chatId].notifications ? 'Уведомления включены' : 'Уведомления выключены' });
+    bot.answerCallbackQuery(query.id, { text: userData.notifications ? 'Уведомления включены' : 'Уведомления выключены' });
+  } else if (query.data === 'toggle_changes') {
+    userData.notifyChanges = !userData.notifyChanges;
+    await saveJSON(USERS_FILE, users);
+    bot.answerCallbackQuery(query.id, { text: userData.notifyChanges ? 'Изменения включены' : 'Изменения выключены' });
   } else if (query.data.startsWith('fuel_')) {
     const fuel = query.data.replace('fuel_', '');
-    users[chatId].fuelType = fuel;
+    userData.fuelType = fuel;
     await saveJSON(USERS_FILE, users);
     bot.answerCallbackQuery(query.id, { text: `Выбрано: ${fuel.toUpperCase()}` });
+  }
+
+  // Обновляем экран настроек без новых сообщений
+  try {
+    await bot.editMessageText(buildSettingsText(userData), {
+      chat_id: chatId,
+      message_id: messageId,
+      parse_mode: 'Markdown',
+      reply_markup: buildSettingsKeyboard(userData)
+    });
+  } catch (e) {
+    // если сообщение уже не существует/не редактируется — просто молчим
   }
 });
 
@@ -794,9 +893,6 @@ bot.onText(/\/restore/, async (msg) => {
   }
 });
 
-// ========== EXPRESS WEB SERVER ==========
-
-// ✅ ИСПРАВЛЕНИЕ 5: Современный HTML Dashboard
 
 // ========== EXPRESS WEB SERVER ==========
 
@@ -948,6 +1044,61 @@ app.get('/check-prices', async (req, res) => {
   const updates = await checkAllPrices();
   res.json({ status: 'success', updates: updates.length });
 });
+
+// ============================================================
+// Тайминги (не трогаем логику, только порядок/константы)
+// ============================================================
+
+console.log('\n' + '='.repeat(60));
+console.log('🚀 FUEL PRICE TRACKER');
+console.log('='.repeat(60));
+console.log(`🕐 Запущен: ${serverStartTime.toLocaleString('de-DE')}`);
+console.log('='.repeat(60) + '\n');
+
+// Автобэкап каждые 6 часов
+setInterval(async () => {
+  try {
+    console.log('⏰ Автобэкап (каждые 6 часов)');
+    await backupToDrive();
+    console.log('✅ Автобэкап завершён успешно');
+  } catch (error) {
+    console.error('❌ Ошибка автобэкапа:', error.message);
+  }
+}, AUTO_BACKUP_INTERVAL);
+
+// Первый бэкап через 5 минут после запуска
+setTimeout(async () => {
+  try {
+    console.log('⏰ Первый бэкап после запуска');
+    await backupToDrive();
+    console.log('✅ Первый бэкап завершён');
+  } catch (error) {
+    console.error('❌ Ошибка первого бэкапа:', error.message);
+  }
+}, 5 * 60 * 1000);
+
+// Проверка цен каждые 5 минут
+setInterval(async () => {
+  try {
+    await checkAllPrices();
+  } catch (error) {
+    console.error('❌ Ошибка проверки цен:', error.message);
+  }
+}, PRICE_CHECK_INTERVAL);
+
+// Восстановление при старте (если включено)
+if (process.env.AUTO_RESTORE_ON_START === '1') {
+  (async () => {
+    try {
+      console.log('🔄 Автовосстановление при старте...');
+      await restoreFromDrive();
+      console.log('✅ Данные восстановлены из Google Drive');
+    } catch (error) {
+      console.error('⚠️ Автовосстановление не удалось:', error.message);
+    }
+  })();
+}
+
 // Запуск Express сервера
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
