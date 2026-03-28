@@ -373,13 +373,6 @@ async function checkAllPrices() {
     
     database[station.url].unshift(current);
     
-    // Храним только последние 14 дней
-    const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
-    const cutoff = new Date(Date.now() - TWO_WEEKS_MS);
-    database[station.url] = database[station.url].filter(entry => 
-      new Date(entry.timestamp) > cutoff
-    );
-    
     if (hasChanges) {
       updates.push({
         name: current.name,
@@ -479,11 +472,12 @@ async function analyzeWeeklyPatterns(stationUrl, fuelType = 'diesel') {
   const database = await loadJSON(DATABASE_FILE, {});
   const allHistory = database[stationUrl] || [];
   
-  const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-  const weekAgo = new Date(Date.now() - ONE_WEEK_MS);
-  
-  const history = allHistory.filter(entry => 
-    new Date(entry.timestamp) > weekAgo
+  // Последние 7 календарных дней: сегодня + 6 предыдущих
+  const now7 = new Date();
+  const startOf7Days = new Date(now7.getFullYear(), now7.getMonth(), now7.getDate() - 6, 0, 0, 0, 0);
+
+  const history = allHistory.filter(entry =>
+    new Date(entry.timestamp) >= startOf7Days
   );
   
   if (history.length < 20) {
@@ -535,20 +529,20 @@ async function analyzeWeeklyPatterns(stationUrl, fuelType = 'diesel') {
     bestSlots.push({
       day,
       hour: parseInt(hour),
-      avgPrice: parseFloat(avg.toFixed(3)),
+      avgPrice: avg.toFixed(3),
       observations: prices.length
     });
   }
   
-  bestSlots.sort((a, b) => a.avgPrice - b.avgPrice);
+  bestSlots.sort((a, b) => parseFloat(a.avgPrice) - parseFloat(b.avgPrice));
   
   const top5 = bestSlots.slice(0, 5);
-  const bestDay = Object.entries(avgByDay).sort((a, b) => a[1] - b[1])[0];
-  const bestHour = Object.entries(avgByHour).sort((a, b) => a[1] - b[1])[0];
+  const bestDay = Object.entries(avgByDay).sort((a, b) => parseFloat(a[1]) - parseFloat(b[1]))[0];
+  const bestHour = Object.entries(avgByHour).sort((a, b) => parseFloat(a[1]) - parseFloat(b[1]))[0];
   
   return {
-    bestDay: { day: bestDay[0], avgPrice: parseFloat(bestDay[1]) },
-    bestHour: { hour: parseInt(bestHour[0]), avgPrice: parseFloat(bestHour[1]) },
+    bestDay: { day: bestDay[0], avgPrice: bestDay[1] },
+    bestHour: { hour: parseInt(bestHour[0]), avgPrice: bestHour[1] },
     top5Slots: top5,
     totalObservations: history.length,
     period: '7 дней'

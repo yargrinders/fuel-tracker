@@ -11,44 +11,86 @@
     "lastAlerts": {
       "https://www.clever-tanken.de/tankstelle_details/186650": {
         "diesel": null,
-        "e5": 1.779,
+        "e5": 2.089,
         "e10": null
       },
       "https://www.clever-tanken.de/tankstelle_details/1203": {
         "diesel": null,
-        "e5": 1.809,
+        "e5": 2.109,
         "e10": null
       },
       "https://www.clever-tanken.de/tankstelle_details/12291": {
         "diesel": null,
-        "e5": 1.849,
+        "e5": null,
+        "e10": null
+      },
+      "https://www.clever-tanken.de/tankstelle_details/11438": {
+        "diesel": null,
+        "e5": 2.089,
         "e10": null
       }
     }
   },
   "910176803": {
     "notifications": true,
-    "notifyChanges": true,
+    "notifyChanges": false,
     "targets": {
       "diesel": null,
-      "e5": 9.999,
+      "e5": 1.769,
       "e10": null
     },
     "fuelType": "e5",
     "lastAlerts": {
       "https://www.clever-tanken.de/tankstelle_details/1203": {
         "diesel": null,
-        "e5": 1.809,
+        "e5": null,
         "e10": null
       },
       "https://www.clever-tanken.de/tankstelle_details/186650": {
         "diesel": null,
-        "e5": 1.779,
+        "e5": null,
         "e10": null
       },
       "https://www.clever-tanken.de/tankstelle_details/12291": {
         "diesel": null,
-        "e5": 1.849,
+        "e5": null,
+        "e10": null
+      },
+      "https://www.clever-tanken.de/tankstelle_details/11438": {
+        "diesel": null,
+        "e5": null,
+        "e10": null
+      }
+    }
+  },
+  "6223588101": {
+    "notifications": true,
+    "notifyChanges": false,
+    "targets": {
+      "diesel": null,
+      "e5": null,
+      "e10": null
+    },
+    "fuelType": "diesel",
+    "lastAlerts": {
+      "https://www.clever-tanken.de/tankstelle_details/12291": {
+        "diesel": null,
+        "e5": null,
+        "e10": null
+      },
+      "https://www.clever-tanken.de/tankstelle_details/186650": {
+        "diesel": null,
+        "e5": null,
+        "e10": null
+      },
+      "https://www.clever-tanken.de/tankstelle_details/1203": {
+        "diesel": null,
+        "e5": null,
+        "e10": null
+      },
+      "https://www.clever-tanken.de/tankstelle_details/11438": {
+        "diesel": null,
+        "e5": null,
         "e10": null
       }
     }

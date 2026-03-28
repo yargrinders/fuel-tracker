@@ -1,7 +1,7 @@
 [
   {
     "url": "https://www.clever-tanken.de/tankstelle_details/186650",
-    "name": "CLASSIC Hubertus Str. 8 Wolfsburg",
+    "name": "CLASSIC - Hubertus Str. 8 Wolfsburg",
     "openingHours": {
       "monFri": "6:00-23:00",
       "sat": "6:00-22:00",
@@ -11,7 +11,7 @@
   },
   {
     "url": "https://www.clever-tanken.de/tankstelle_details/11438",
-    "name": "HEM Grauhorst Str. 10 Wolfsburg",
+    "name": "HEM - Grauhorst Str. 10 Wolfsburg",
     "openingHours": {
       "monFri": "6:00-22:00",
       "sat": "6:00-22:00",
@@ -21,7 +21,7 @@
   },
   {
     "url": "https://www.clever-tanken.de/tankstelle_details/1203",
-    "name": "ARAL Hinterm Hagen Str. 21 Wolfsburg",
+    "name": "ARAL - Hinterm Hagen Str. 21 Wolfsburg",
     "openingHours": {
       "monFri": "6:00-22:00",
       "sat": "6:00-22:00",
