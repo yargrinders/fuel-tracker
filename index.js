@@ -373,6 +373,13 @@ async function checkAllPrices() {
     
     database[station.url].unshift(current);
     
+    // Храним только последние 14 дней
+    const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
+    const cutoff = new Date(Date.now() - TWO_WEEKS_MS);
+    database[station.url] = database[station.url].filter(entry => 
+      new Date(entry.timestamp) > cutoff
+    );
+    
     if (hasChanges) {
       updates.push({
         name: current.name,
@@ -471,83 +478,60 @@ async function notifyUsers(updates) {
 async function analyzeWeeklyPatterns(stationUrl, fuelType = 'diesel') {
   const database = await loadJSON(DATABASE_FILE, {});
   const allHistory = database[stationUrl] || [];
-  
-  // Последние 7 календарных дней: сегодня + 6 предыдущих
+
+  // Последние 7 календарных дней: сегодня + 6 предыдущих (с начала суток)
   const now7 = new Date();
   const startOf7Days = new Date(now7.getFullYear(), now7.getMonth(), now7.getDate() - 6, 0, 0, 0, 0);
 
   const history = allHistory.filter(entry =>
     new Date(entry.timestamp) >= startOf7Days
   );
-  
+
   if (history.length < 20) {
     return { error: 'Недостаточно данных (минимум 20 записей за неделю)' };
   }
-  
-  const patterns = {
-    byDayOfWeek: {},
-    byHour: {},
-    byDayAndHour: {}
-  };
-  
+
+  const minByDay = {};
+  const minByHour = {};
+  const allObservations = [];
+
   for (const entry of history) {
     const price = entry.prices[fuelType];
     if (!price) continue;
-    
+
     const date = new Date(entry.timestamp);
     const dayOfWeek = date.toLocaleDateString('ru-RU', { weekday: 'long' });
     const hour = date.getHours();
-    const key = `${dayOfWeek}-${hour}`;
-    
-    if (!patterns.byDayOfWeek[dayOfWeek]) patterns.byDayOfWeek[dayOfWeek] = [];
-    patterns.byDayOfWeek[dayOfWeek].push(price);
-    
-    if (!patterns.byHour[hour]) patterns.byHour[hour] = [];
-    patterns.byHour[hour].push(price);
-    
-    if (!patterns.byDayAndHour[key]) patterns.byDayAndHour[key] = [];
-    patterns.byDayAndHour[key].push(price);
+
+    if (minByDay[dayOfWeek] === undefined || price < minByDay[dayOfWeek]) {
+      minByDay[dayOfWeek] = price;
+    }
+    if (minByHour[hour] === undefined || price < minByHour[hour]) {
+      minByHour[hour] = price;
+    }
+
+    allObservations.push({ day: dayOfWeek, hour, price, timestamp: entry.timestamp });
   }
-  
-  const avgByDay = {};
-  for (const [day, prices] of Object.entries(patterns.byDayOfWeek)) {
-    avgByDay[day] = (prices.reduce((a, b) => a + b, 0) / prices.length).toFixed(3);
-  }
-  
-  const avgByHour = {};
-  for (const [hour, prices] of Object.entries(patterns.byHour)) {
-    avgByHour[hour] = (prices.reduce((a, b) => a + b, 0) / prices.length).toFixed(3);
-  }
-  
-  const bestSlots = [];
-  for (const [key, prices] of Object.entries(patterns.byDayAndHour)) {
-    if (prices.length < 3) continue;
-    
-    const avg = prices.reduce((a, b) => a + b, 0) / prices.length;
-    const [day, hour] = key.split('-');
-    
-    bestSlots.push({
-      day,
-      hour: parseInt(hour),
-      avgPrice: avg.toFixed(3),
-      observations: prices.length
-    });
-  }
-  
-  bestSlots.sort((a, b) => parseFloat(a.avgPrice) - parseFloat(b.avgPrice));
-  
-  const top5 = bestSlots.slice(0, 5);
-  const bestDay = Object.entries(avgByDay).sort((a, b) => parseFloat(a[1]) - parseFloat(b[1]))[0];
-  const bestHour = Object.entries(avgByHour).sort((a, b) => parseFloat(a[1]) - parseFloat(b[1]))[0];
-  
+
+  allObservations.sort((a, b) => a.price - b.price || new Date(b.timestamp) - new Date(a.timestamp));
+  const top5 = allObservations.slice(0, 5).map(o => ({
+    day: o.day,
+    hour: o.hour,
+    price: o.price.toFixed(3)
+  }));
+
+  const bestDayEntry  = Object.entries(minByDay).sort((a, b) => a[1] - b[1])[0];
+  const bestHourEntry = Object.entries(minByHour).sort((a, b) => a[1] - b[1])[0];
+
   return {
-    bestDay: { day: bestDay[0], avgPrice: bestDay[1] },
-    bestHour: { hour: parseInt(bestHour[0]), avgPrice: bestHour[1] },
+    bestDay:  { day: bestDayEntry[0], price: bestDayEntry[1].toFixed(3) },
+    bestHour: { hour: parseInt(bestHourEntry[0]), price: bestHourEntry[1].toFixed(3) },
     top5Slots: top5,
     totalObservations: history.length,
     period: '7 дней'
   };
 }
+
 
 // ========== TELEGRAM BOT COMMANDS ==========
 
@@ -701,12 +685,12 @@ bot.onText(/\/analytics/, async (msg) => {
     
     message += `📍 *${station.name}*\n`;
     message += `📈 Наблюдений: ${analysis.totalObservations}\n\n`;
-    message += `🏆 Лучший день: ${analysis.bestDay.day} (${analysis.bestDay.avgPrice}€)\n`;
-    message += `⏰ Лучшее время: ${analysis.bestHour.hour}:00 (${analysis.bestHour.avgPrice}€)\n\n`;
+    message += `🏆 Лучший день: ${analysis.bestDay.day} (${analysis.bestDay.price}€)\n`;
+    message += `⏰ Лучшее время: ${analysis.bestHour.hour}:00 (${analysis.bestHour.price}€)\n\n`;
     message += `🎯 Топ-5:\n`;
     
     analysis.top5Slots.forEach((slot, i) => {
-      message += `${i + 1}. ${slot.day} в ${slot.hour}:00 - ${slot.avgPrice}€\n`;
+      message += `${i + 1}. ${slot.day} в ${slot.hour}:00 - ${slot.price}€\n`;
     });
     message += '\n';
   }
