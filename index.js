@@ -481,7 +481,8 @@ async function analyzeWeeklyPatterns(stationUrl, fuelType = 'diesel') {
 
   // Последние 7 календарных дней: сегодня + 6 предыдущих (с начала суток)
   const now7 = new Date();
-  const startOf7Days = new Date(now7.getFullYear(), now7.getMonth(), now7.getDate() - 6, 0, 0, 0, 0);
+  const todayDate = now7.getDate();
+  const startOf7Days = new Date(now7.getFullYear(), now7.getMonth(), todayDate - 6, 0, 0, 0, 0);
 
   const history = allHistory.filter(entry =>
     new Date(entry.timestamp) >= startOf7Days
@@ -491,47 +492,64 @@ async function analyzeWeeklyPatterns(stationUrl, fuelType = 'diesel') {
     return { error: 'Недостаточно данных (минимум 20 записей за неделю)' };
   }
 
-  const minByDay = {};
-  const minByHour = {};
-  const allObservations = [];
+  // Для каждого из 7 дней найти минимальную цену и час когда она была
+  // Строим map: dateString (YYYY-MM-DD) -> { minPrice, hour, dayName }
+  const byCalendarDay = {};
 
   for (const entry of history) {
     const price = entry.prices[fuelType];
     if (!price) continue;
 
     const date = new Date(entry.timestamp);
-    const dayOfWeek = date.toLocaleDateString('ru-RU', { weekday: 'long' });
+    const dateKey = date.toISOString().slice(0, 10); // YYYY-MM-DD
     const hour = date.getHours();
+    const dayName = date.toLocaleDateString('ru-RU', { weekday: 'long' });
 
-    if (minByDay[dayOfWeek] === undefined || price < minByDay[dayOfWeek]) {
-      minByDay[dayOfWeek] = price;
+    if (!byCalendarDay[dateKey] || price < byCalendarDay[dateKey].minPrice) {
+      byCalendarDay[dateKey] = { minPrice: price, hour, dayName, dateKey };
     }
-    if (minByHour[hour] === undefined || price < minByHour[hour]) {
-      minByHour[hour] = price;
-    }
-
-    allObservations.push({ day: dayOfWeek, hour, price, timestamp: entry.timestamp });
   }
 
-  allObservations.sort((a, b) => a.price - b.price || new Date(b.timestamp) - new Date(a.timestamp));
-  const top5 = allObservations.slice(0, 5).map(o => ({
-    day: o.day,
-    hour: o.hour,
-    price: o.price.toFixed(3)
-  }));
+  // Список 7 дней: от 6 дней назад до сегодня, отсортировать от вчера назад
+  // (вчера первым, 7 дней назад последним)
+  const days7 = [];
+  for (let i = 1; i <= 7; i++) {
+    const d = new Date(now7.getFullYear(), now7.getMonth(), todayDate - i, 0, 0, 0, 0);
+    const key = d.toISOString().slice(0, 10);
+    if (byCalendarDay[key]) {
+      const rec = byCalendarDay[key];
+      days7.push({
+        day: rec.dayName,
+        hour: rec.hour,
+        price: rec.minPrice.toFixed(3)
+      });
+    }
+  }
 
-  const bestDayEntry  = Object.entries(minByDay).sort((a, b) => a[1] - b[1])[0];
+  // Лучший день: минимум среди всех дней
+  const minByDayName = {};
+  const minByHour = {};
+  for (const entry of history) {
+    const price = entry.prices[fuelType];
+    if (!price) continue;
+    const date = new Date(entry.timestamp);
+    const dayName = date.toLocaleDateString('ru-RU', { weekday: 'long' });
+    const hour = date.getHours();
+    if (minByDayName[dayName] === undefined || price < minByDayName[dayName]) minByDayName[dayName] = price;
+    if (minByHour[hour] === undefined || price < minByHour[hour]) minByHour[hour] = price;
+  }
+
+  const bestDayEntry  = Object.entries(minByDayName).sort((a, b) => a[1] - b[1])[0];
   const bestHourEntry = Object.entries(minByHour).sort((a, b) => a[1] - b[1])[0];
 
   return {
     bestDay:  { day: bestDayEntry[0], price: bestDayEntry[1].toFixed(3) },
     bestHour: { hour: parseInt(bestHourEntry[0]), price: bestHourEntry[1].toFixed(3) },
-    top5Slots: top5,
+    days7,
     totalObservations: history.length,
     period: '7 дней'
   };
 }
-
 
 // ========== TELEGRAM BOT COMMANDS ==========
 
@@ -687,9 +705,8 @@ bot.onText(/\/analytics/, async (msg) => {
     message += `📈 Наблюдений: ${analysis.totalObservations}\n\n`;
     message += `🏆 Лучший день: ${analysis.bestDay.day} (${analysis.bestDay.price}€)\n`;
     message += `⏰ Лучшее время: ${analysis.bestHour.hour}:00 (${analysis.bestHour.price}€)\n\n`;
-    message += `🎯 Топ-5:\n`;
-    
-    analysis.top5Slots.forEach((slot, i) => {
+    message += `🎯 7 - Дней:\n`;
+    analysis.days7.forEach((slot, i) => {
       message += `${i + 1}. ${slot.day} в ${slot.hour}:00 - ${slot.price}€\n`;
     });
     message += '\n';
