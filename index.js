@@ -479,7 +479,7 @@ async function analyzeWeeklyPatterns(stationUrl, fuelType = 'diesel') {
   const database = await loadJSON(DATABASE_FILE, {});
   const allHistory = database[stationUrl] || [];
 
-  // Последние 7 календарных дней: сегодня + 6 предыдущих (с начала суток)
+  // Последние 7 календарных дней включая сегодня (с начала суток 6 дней назад)
   const now7 = new Date();
   const todayDate = now7.getDate();
   const startOf7Days = new Date(now7.getFullYear(), now7.getMonth(), todayDate - 6, 0, 0, 0, 0);
@@ -492,8 +492,13 @@ async function analyzeWeeklyPatterns(stationUrl, fuelType = 'diesel') {
     return { error: 'Недостаточно данных (минимум 20 записей за неделю)' };
   }
 
-  // Для каждого из 7 дней найти минимальную цену и час когда она была
-  // Строим map: dateString (YYYY-MM-DD) -> { minPrice, hour, dayName }
+  // Хелпер: локальный ключ даты YYYY-MM-DD в Berlin timezone
+  function localDateKey(date) {
+    const tz = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Berlin' });
+    return tz.format(date); // формат: 2026-03-28
+  }
+
+  // Для каждого календарного дня — минимальная цена и час когда она была
   const byCalendarDay = {};
 
   for (const entry of history) {
@@ -501,21 +506,20 @@ async function analyzeWeeklyPatterns(stationUrl, fuelType = 'diesel') {
     if (!price) continue;
 
     const date = new Date(entry.timestamp);
-    const dateKey = date.toISOString().slice(0, 10); // YYYY-MM-DD
-    const hour = date.getHours();
-    const dayName = date.toLocaleDateString('ru-RU', { weekday: 'long' });
+    const dateKey = localDateKey(date);
+    const hour = parseInt(new Intl.DateTimeFormat('de-DE', { timeZone: 'Europe/Berlin', hour: 'numeric', hour12: false }).format(date));
+    const dayName = date.toLocaleDateString('ru-RU', { weekday: 'long', timeZone: 'Europe/Berlin' });
 
     if (!byCalendarDay[dateKey] || price < byCalendarDay[dateKey].minPrice) {
       byCalendarDay[dateKey] = { minPrice: price, hour, dayName, dateKey };
     }
   }
 
-  // Список 7 дней: от 6 дней назад до сегодня, отсортировать от вчера назад
-  // (вчера первым, 7 дней назад последним)
+  // Список: сегодня (i=0) → 6 дней назад (i=6), показываем только дни с данными
   const days7 = [];
-  for (let i = 1; i <= 7; i++) {
-    const d = new Date(now7.getFullYear(), now7.getMonth(), todayDate - i, 0, 0, 0, 0);
-    const key = d.toISOString().slice(0, 10);
+  for (let i = 0; i <= 6; i++) {
+    const d = new Date(now7.getFullYear(), now7.getMonth(), todayDate - i, 12, 0, 0, 0);
+    const key = localDateKey(d);
     if (byCalendarDay[key]) {
       const rec = byCalendarDay[key];
       days7.push({
@@ -526,15 +530,15 @@ async function analyzeWeeklyPatterns(stationUrl, fuelType = 'diesel') {
     }
   }
 
-  // Лучший день: минимум среди всех дней
+  // Лучший день и лучший час — минимум по всем данным за период
   const minByDayName = {};
   const minByHour = {};
   for (const entry of history) {
     const price = entry.prices[fuelType];
     if (!price) continue;
     const date = new Date(entry.timestamp);
-    const dayName = date.toLocaleDateString('ru-RU', { weekday: 'long' });
-    const hour = date.getHours();
+    const dayName = date.toLocaleDateString('ru-RU', { weekday: 'long', timeZone: 'Europe/Berlin' });
+    const hour = parseInt(new Intl.DateTimeFormat('de-DE', { timeZone: 'Europe/Berlin', hour: 'numeric', hour12: false }).format(date));
     if (minByDayName[dayName] === undefined || price < minByDayName[dayName]) minByDayName[dayName] = price;
     if (minByHour[hour] === undefined || price < minByHour[hour]) minByHour[hour] = price;
   }
@@ -706,6 +710,7 @@ bot.onText(/\/analytics/, async (msg) => {
     message += `🏆 Лучший день: ${analysis.bestDay.day} (${analysis.bestDay.price}€)\n`;
     message += `⏰ Лучшее время: ${analysis.bestHour.hour}:00 (${analysis.bestHour.price}€)\n\n`;
     message += `🎯 7 - Дней:\n`;
+    
     analysis.days7.forEach((slot, i) => {
       message += `${i + 1}. ${slot.day} в ${slot.hour}:00 - ${slot.price}€\n`;
     });
